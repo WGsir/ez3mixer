@@ -23,6 +23,10 @@
           <select id="deviceSelect" disabled></select>
           <button id="addChannelBtn" disabled>加入軌道</button>
         </div>
+        <div id="outputDeviceRow" class="row">
+          <label for="outputDeviceSelect">輸出裝置</label>
+          <select id="outputDeviceSelect" disabled></select>
+        </div>
         <div class="row">
           <label for="audioFileInput">音訊檔案</label>
           <input id="audioFileInput" type="file" accept="audio/*,.mp3" multiple />
@@ -85,6 +89,11 @@
             <span class="progress-current">0:00</span>
             <span class="progress-duration">0:00</span>
           </div>
+        </div>
+        <div class="control-row track-output-row is-hidden">
+          <label>輸出</label>
+          <select class="track-output-select" disabled></select>
+          <output class="track-output-note"></output>
         </div>
         <div class="youtube-player is-hidden">
           <div class="youtube-frame"></div>

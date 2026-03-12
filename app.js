@@ -3,6 +3,8 @@ const addChannelBtn = document.getElementById("addChannelBtn");
 const addFileChannelBtn = document.getElementById("addFileChannelBtn");
 const addUrlChannelBtn = document.getElementById("addUrlChannelBtn");
 const deviceSelect = document.getElementById("deviceSelect");
+const outputDeviceRow = document.getElementById("outputDeviceRow");
+const outputDeviceSelect = document.getElementById("outputDeviceSelect");
 const audioFileInput = document.getElementById("audioFileInput");
 const audioUrlInput = document.getElementById("audioUrlInput");
 const channelsContainer = document.getElementById("channels");
@@ -19,6 +21,8 @@ let masterAnalyser;
 let meterAnimationId;
 let youtubeApiReadyPromise;
 const channels = new Map();
+let availableOutputDevices = [];
+const supportsAudioOutputSelection = typeof HTMLMediaElement !== "undefined" && typeof HTMLMediaElement.prototype.setSinkId === "function";
 const LOW_LATENCY_AUDIO_SETTINGS = {
   contextSampleRate: 44100,
   captureSampleRate: 44100,
@@ -149,6 +153,85 @@ function updateImportButtons() {
   addUrlChannelBtn.disabled = !isReady || audioUrlInput.value.trim().length === 0;
 }
 
+function updateGlobalOutputUI() {
+  if (supportsAudioOutputSelection) {
+    outputDeviceRow.classList.add("is-hidden");
+    return;
+  }
+
+  outputDeviceRow.classList.remove("is-hidden");
+  outputDeviceSelect.innerHTML = "";
+
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = "統一輸出（系統預設）";
+  outputDeviceSelect.appendChild(option);
+  outputDeviceSelect.disabled = true;
+}
+
+async function applyTrackOutputDevice(channel, deviceId) {
+  if (!supportsAudioOutputSelection || !channel.outputMonitor || !channel.refs.trackOutputSelect) {
+    return;
+  }
+
+  try {
+    await channel.outputMonitor.setSinkId(deviceId || "");
+    channel.outputDeviceId = deviceId || "";
+    channel.refs.trackOutputSelect.value = channel.outputDeviceId;
+    await channel.outputMonitor.play();
+  } catch (error) {
+    setStatus(`切換軌道輸出失敗：${error.message}`);
+  }
+}
+
+function syncTrackOutputSelect(channel) {
+  const { trackOutputRow, trackOutputSelect, trackOutputNote } = channel.refs;
+  if (!trackOutputRow || !trackOutputSelect || !trackOutputNote) {
+    return;
+  }
+
+  if (!supportsAudioOutputSelection) {
+    trackOutputRow.classList.add("is-hidden");
+    return;
+  }
+
+  trackOutputRow.classList.remove("is-hidden");
+
+  if (!channel.outputMonitor) {
+    trackOutputSelect.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "不支援";
+    trackOutputSelect.appendChild(option);
+    trackOutputSelect.disabled = true;
+    trackOutputNote.textContent = "由瀏覽器控制";
+    return;
+  }
+
+  trackOutputSelect.innerHTML = "";
+  availableOutputDevices.forEach((device, index) => {
+    const option = document.createElement("option");
+    option.value = device.deviceId;
+    option.textContent = device.label || `輸出裝置 ${index + 1}`;
+    trackOutputSelect.appendChild(option);
+  });
+
+  const hasOutputs = availableOutputDevices.length > 0;
+  trackOutputSelect.disabled = !hasOutputs;
+  trackOutputNote.textContent = hasOutputs ? "" : "找不到輸出裝置";
+
+  if (!hasOutputs) {
+    return;
+  }
+
+  const matchedDevice = availableOutputDevices.find((device) => device.deviceId === channel.outputDeviceId);
+  trackOutputSelect.value = matchedDevice ? matchedDevice.deviceId : availableOutputDevices[0].deviceId;
+
+  if (!matchedDevice) {
+    applyTrackOutputDevice(channel, trackOutputSelect.value);
+  }
+}
+
 function createChannelNodes() {
   const gain = audioContext.createGain();
   const filter = audioContext.createBiquadFilter();
@@ -163,7 +246,17 @@ function createChannelNodes() {
   panner.connect(analyser);
   analyser.connect(masterGain);
 
-  return { gain, filter, panner, analyser };
+  if (!supportsAudioOutputSelection) {
+    return { gain, filter, panner, analyser };
+  }
+
+  const outputDestination = audioContext.createMediaStreamDestination();
+  const outputMonitor = new Audio();
+  outputMonitor.autoplay = true;
+  outputMonitor.srcObject = outputDestination.stream;
+  analyser.connect(outputDestination);
+
+  return { gain, filter, panner, analyser, outputDestination, outputMonitor, outputDeviceId: "" };
 }
 
 function createMicDenoiseNodes() {
@@ -209,6 +302,9 @@ function appendChannelElement(title, sourceType) {
       progressSeek: clone.querySelector(".progress-seek"),
       progressCurrent: clone.querySelector(".progress-current"),
       progressDuration: clone.querySelector(".progress-duration"),
+      trackOutputRow: clone.querySelector(".track-output-row"),
+      trackOutputSelect: clone.querySelector(".track-output-select"),
+      trackOutputNote: clone.querySelector(".track-output-note"),
       youtubePlayer: clone.querySelector(".youtube-player"),
       youtubeFrame: clone.querySelector(".youtube-frame"),
       transportBtn: clone.querySelector(".transport-btn"),
@@ -234,9 +330,12 @@ async function ensureAudioInitialized() {
     });
     masterGain = audioContext.createGain();
     masterAnalyser = createAnalyser();
-    masterGain.connect(audioContext.destination);
+    if (!supportsAudioOutputSelection) {
+      masterGain.connect(audioContext.destination);
+    }
     masterGain.connect(masterAnalyser);
     updateMasterVolume();
+    updateGlobalOutputUI();
   }
 
   if (audioContext.state !== "running") {
@@ -246,6 +345,7 @@ async function ensureAudioInitialized() {
   await navigator.mediaDevices.getUserMedia({
     audio: createLowLatencyAudioConstraints()
   });
+
   await refreshDevices();
   updateImportButtons();
   ensureMeterLoop();
@@ -254,6 +354,7 @@ async function ensureAudioInitialized() {
 async function refreshDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs = devices.filter((device) => device.kind === "audioinput");
+  availableOutputDevices = devices.filter((device) => device.kind === "audiooutput");
 
   deviceSelect.innerHTML = "";
   inputs.forEach((device, index) => {
@@ -267,6 +368,11 @@ async function refreshDevices() {
   const hasInputs = inputs.length > 0;
   deviceSelect.disabled = !hasInputs;
   addChannelBtn.disabled = !hasInputs;
+
+  channels.forEach((channel) => {
+    syncTrackOutputSelect(channel);
+  });
+
   setStatus(hasInputs ? `已載入 ${inputs.length} 個輸入裝置` : "找不到輸入裝置");
 }
 
@@ -286,11 +392,16 @@ function removeChannel(channelId) {
     URL.revokeObjectURL(channel.objectUrl);
   }
   channel.youtubePlayer?.destroy?.();
+  channel.outputMonitor?.pause?.();
+  if (channel.outputMonitor) {
+    channel.outputMonitor.srcObject = null;
+  }
   channel.source?.disconnect?.();
   channel.inputNode?.disconnect?.();
   channel.highpass?.disconnect?.();
   channel.gateGain?.disconnect?.();
   channel.gateAnalyser?.disconnect?.();
+  channel.outputDestination?.disconnect?.();
   channel.gain?.disconnect?.();
   channel.filter?.disconnect?.();
   channel.panner?.disconnect?.();
@@ -536,6 +647,13 @@ function wireChannelUI(channelId, refs) {
     updateProgressUI(channel);
   });
 
+  refs.trackOutputSelect.addEventListener("change", () => {
+    if (!supportsAudioOutputSelection || !channel.outputMonitor) {
+      return;
+    }
+    applyTrackOutputDevice(channel, refs.trackOutputSelect.value);
+  });
+
   if (channel.mediaElement) {
     channel.mediaElement.addEventListener("play", () => updateTransportButton(channel));
     channel.mediaElement.addEventListener("pause", () => updateTransportButton(channel));
@@ -561,6 +679,8 @@ function wireChannelUI(channelId, refs) {
     refs.lpValue.textContent = "-";
     refs.mediaProgress.classList.remove("is-hidden");
   }
+
+  syncTrackOutputSelect(channel);
 
   updateTransportButton(channel);
   updateProgressUI(channel);
@@ -656,7 +776,7 @@ function createMediaElementFromSource(sourceUrl, { loop = false } = {}) {
 
 async function addMediaElementChannel({ title, sourceType, mediaElement, objectUrl }) {
   const source = audioContext.createMediaElementSource(mediaElement);
-  const { gain, filter, panner, analyser } = createChannelNodes();
+  const { gain, filter, panner, analyser, outputDestination, outputMonitor, outputDeviceId } = createChannelNodes();
   source.connect(gain);
 
   const { element, refs } = appendChannelElement(title, sourceType);
@@ -667,6 +787,9 @@ async function addMediaElementChannel({ title, sourceType, mediaElement, objectU
     filter,
     panner,
     analyser,
+    outputDestination,
+    outputMonitor,
+    outputDeviceId,
     mediaElement,
     objectUrl,
     element,
@@ -693,7 +816,7 @@ async function addChannel() {
     });
 
     const source = audioContext.createMediaStreamSource(stream);
-    const { gain, filter, panner, analyser } = createChannelNodes();
+    const { gain, filter, panner, analyser, outputDestination, outputMonitor, outputDeviceId } = createChannelNodes();
     const { input, highpass, gateAnalyser, gateGain } = createMicDenoiseNodes();
 
     source.connect(input);
@@ -714,6 +837,9 @@ async function addChannel() {
       filter,
       panner,
       analyser,
+      outputDestination,
+      outputMonitor,
+      outputDeviceId,
       element,
       refs,
       isMicrophone: true,

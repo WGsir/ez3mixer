@@ -46,6 +46,10 @@ p {
   margin-bottom: 0;
 }
 
+.row.is-hidden {
+  display: none;
+}
+
 
 select,
 button,
@@ -189,6 +193,14 @@ select:disabled {
 
 .meter-control-row {
   grid-template-columns: 90px 1fr 60px;
+}
+
+.track-output-row {
+  grid-template-columns: 90px 1fr 60px;
+}
+
+.track-output-row.is-hidden {
+  display: none;
 }
 
 .meter {
