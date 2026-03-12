@@ -29,8 +29,8 @@
           <button id="addFileChannelBtn" disabled>加入檔案</button>
         </div>
         <div class="row">
-          <label for="audioUrlInput">音訊網址</label>
-          <input id="audioUrlInput" type="url" placeholder="https://example.com/audio.mp3" />
+          <label for="audioUrlInput">網址</label>
+          <input id="audioUrlInput" type="url" placeholder="https://example.com/audio.mp3 或 https://www.youtube.com/watch?v=..." />
           <button id="addUrlChannelBtn" disabled>加入網址</button>
         </div>
         <div class="row master">
@@ -85,6 +85,9 @@
             <span class="progress-current">0:00</span>
             <span class="progress-duration">0:00</span>
           </div>
+        </div>
+        <div class="youtube-player is-hidden">
+          <div class="youtube-frame"></div>
         </div>
         <details class="advanced-panel">
           <summary>進階設定</summary>

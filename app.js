@@ -17,6 +17,7 @@ let audioContext;
 let masterGain;
 let masterAnalyser;
 let meterAnimationId;
+let youtubeApiReadyPromise;
 const channels = new Map();
 const LOW_LATENCY_AUDIO_SETTINGS = {
   contextSampleRate: 44100,
@@ -128,6 +129,9 @@ function updateMeters() {
     updateMicDenoise(channel);
     const level = getLevelPercent(channel.analyser);
     paintMeter(channel.refs.meterFill, channel.refs.meterValue, level);
+    if (channel.isYouTube) {
+      updateProgressUI(channel);
+    }
   });
 
   meterAnimationId = requestAnimationFrame(updateMeters);
@@ -205,6 +209,8 @@ function appendChannelElement(title, sourceType) {
       progressSeek: clone.querySelector(".progress-seek"),
       progressCurrent: clone.querySelector(".progress-current"),
       progressDuration: clone.querySelector(".progress-duration"),
+      youtubePlayer: clone.querySelector(".youtube-player"),
+      youtubeFrame: clone.querySelector(".youtube-frame"),
       transportBtn: clone.querySelector(".transport-btn"),
       muteBtn: clone.querySelector(".mute-btn"),
       removeBtn: clone.querySelector(".remove-btn")
@@ -279,21 +285,33 @@ function removeChannel(channelId) {
   if (channel.objectUrl) {
     URL.revokeObjectURL(channel.objectUrl);
   }
-  channel.source.disconnect();
-  channel.inputNode?.disconnect();
-  channel.highpass?.disconnect();
-  channel.gateGain?.disconnect();
-  channel.gateAnalyser?.disconnect();
-  channel.gain.disconnect();
-  channel.filter.disconnect();
-  channel.panner.disconnect();
-  channel.analyser.disconnect();
+  channel.youtubePlayer?.destroy?.();
+  channel.source?.disconnect?.();
+  channel.inputNode?.disconnect?.();
+  channel.highpass?.disconnect?.();
+  channel.gateGain?.disconnect?.();
+  channel.gateAnalyser?.disconnect?.();
+  channel.gain?.disconnect?.();
+  channel.filter?.disconnect?.();
+  channel.panner?.disconnect?.();
+  channel.analyser?.disconnect?.();
   channel.element.remove();
   channels.delete(channelId);
 }
 
+function isYouTubePlaying(channel) {
+  const state = channel.youtubePlayer?.getPlayerState?.();
+  return state === window.YT?.PlayerState?.PLAYING || state === window.YT?.PlayerState?.BUFFERING;
+}
+
 function updateTransportButton(channel) {
   if (!channel.refs.transportBtn) {
+    return;
+  }
+
+  if (channel.isYouTube) {
+    channel.refs.transportBtn.disabled = !channel.youtubePlayer;
+    channel.refs.transportBtn.textContent = isYouTubePlaying(channel) ? "暫停" : "播放";
     return;
   }
 
@@ -362,6 +380,20 @@ function updateProgressUI(channel) {
     return;
   }
 
+  if (channel.isYouTube) {
+    channel.refs.mediaProgress.classList.remove("is-hidden");
+    const duration = Number(channel.youtubePlayer?.getDuration?.() || 0);
+    const currentTime = Number(channel.youtubePlayer?.getCurrentTime?.() || 0);
+    const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+    channel.refs.progressSeek.disabled = duration <= 0;
+    channel.refs.progressSeek.value = String(Math.round((Math.min(100, Math.max(0, progressPercent)) / 100) * 1000));
+    channel.refs.progressSeek.style.setProperty("--progress", `${Math.min(100, Math.max(0, progressPercent))}%`);
+    channel.refs.progressCurrent.textContent = formatTime(currentTime);
+    channel.refs.progressDuration.textContent = formatTime(duration);
+    return;
+  }
+
   if (!channel.mediaElement) {
     channel.refs.mediaProgress.classList.add("is-hidden");
     channel.refs.progressSeek.disabled = true;
@@ -393,17 +425,27 @@ function wireChannelUI(channelId, refs) {
 
   refs.vol.addEventListener("input", () => {
     const value = Number(refs.vol.value);
-    channel.gain.gain.value = toGain(value);
+    if (channel.isYouTube) {
+      channel.youtubePlayer?.setVolume?.(Math.min(100, value));
+    } else {
+      channel.gain.gain.value = toGain(value);
+    }
     refs.volValue.textContent = `${value}%`;
   });
 
   refs.pan.addEventListener("input", () => {
+    if (channel.isYouTube) {
+      return;
+    }
     const value = Number(refs.pan.value) / 100;
     channel.panner.pan.value = value;
     refs.panValue.textContent = value.toFixed(2);
   });
 
   refs.lp.addEventListener("input", () => {
+    if (channel.isYouTube) {
+      return;
+    }
     const value = Number(refs.lp.value);
     channel.filter.frequency.value = value;
     refs.lpValue.textContent = `${value}`;
@@ -411,7 +453,15 @@ function wireChannelUI(channelId, refs) {
 
   refs.muteBtn.addEventListener("click", () => {
     channel.isMuted = !channel.isMuted;
-    channel.gain.gain.value = channel.isMuted ? 0 : toGain(Number(refs.vol.value));
+    if (channel.isYouTube) {
+      channel.youtubePlayer?.mute?.();
+      if (!channel.isMuted) {
+        channel.youtubePlayer?.unMute?.();
+        channel.youtubePlayer?.setVolume?.(Math.min(100, Number(refs.vol.value)));
+      }
+    } else {
+      channel.gain.gain.value = channel.isMuted ? 0 : toGain(Number(refs.vol.value));
+    }
     refs.muteBtn.textContent = channel.isMuted ? "取消靜音" : "靜音";
   });
 
@@ -434,6 +484,20 @@ function wireChannelUI(channelId, refs) {
   });
 
   refs.transportBtn.addEventListener("click", async () => {
+    if (channel.isYouTube) {
+      if (!channel.youtubePlayer) {
+        return;
+      }
+
+      if (isYouTubePlaying(channel)) {
+        channel.youtubePlayer.pauseVideo();
+      } else {
+        channel.youtubePlayer.playVideo();
+      }
+      updateTransportButton(channel);
+      return;
+    }
+
     if (!channel.mediaElement) {
       return;
     }
@@ -451,6 +515,18 @@ function wireChannelUI(channelId, refs) {
   });
 
   refs.progressSeek.addEventListener("input", () => {
+    if (channel.isYouTube) {
+      const duration = Number(channel.youtubePlayer?.getDuration?.() || 0);
+      if (duration <= 0) {
+        return;
+      }
+
+      const percent = Number(refs.progressSeek.value) / 1000;
+      channel.youtubePlayer.seekTo(duration * percent, true);
+      updateProgressUI(channel);
+      return;
+    }
+
     if (!channel.mediaElement || !Number.isFinite(channel.mediaElement.duration) || channel.mediaElement.duration <= 0) {
       return;
     }
@@ -478,8 +554,94 @@ function wireChannelUI(channelId, refs) {
     refs.headerToggle.classList.add("is-hidden");
   }
 
+  if (channel.isYouTube) {
+    refs.pan.disabled = true;
+    refs.lp.disabled = true;
+    refs.panValue.textContent = "-";
+    refs.lpValue.textContent = "-";
+    refs.mediaProgress.classList.remove("is-hidden");
+  }
+
   updateTransportButton(channel);
   updateProgressUI(channel);
+}
+
+function extractYouTubeVideoId(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "youtu.be") {
+      const id = parsedUrl.pathname.split("/").filter(Boolean)[0];
+      return id || null;
+    }
+
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      if (parsedUrl.pathname === "/watch") {
+        return parsedUrl.searchParams.get("v");
+      }
+
+      const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
+      if (pathSegments[0] === "embed" || pathSegments[0] === "shorts") {
+        return pathSegments[1] || null;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function ensureYouTubeApiReady() {
+  if (window.YT?.Player) {
+    return;
+  }
+
+  if (!youtubeApiReadyPromise) {
+    youtubeApiReadyPromise = new Promise((resolve, reject) => {
+      const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+      const script = existingScript || document.createElement("script");
+
+      if (!existingScript) {
+        script.src = "https://www.youtube.com/iframe_api";
+        script.async = true;
+        document.head.appendChild(script);
+      }
+
+      script.addEventListener("error", () => {
+        reject(new Error("無法載入 YouTube IFrame API"));
+      });
+
+      const previousReady = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        previousReady?.();
+        resolve();
+      };
+    });
+  }
+
+  await youtubeApiReadyPromise;
+}
+
+async function createYouTubePlayer(frameElement, videoId) {
+  await ensureYouTubeApiReady();
+
+  return new Promise((resolve) => {
+    const player = new window.YT.Player(frameElement, {
+      videoId,
+      playerVars: {
+        autoplay: 0,
+        controls: 1,
+        rel: 0,
+        modestbranding: 1,
+        playsinline: 1
+      },
+      events: {
+        onReady: () => resolve(player)
+      }
+    });
+  });
 }
 
 function createMediaElementFromSource(sourceUrl, { loop = false } = {}) {
@@ -610,7 +772,50 @@ async function addUrlChannel() {
 
   const url = audioUrlInput.value.trim();
   if (!url) {
-    setStatus("請先輸入音訊網址");
+    setStatus("請先輸入網址");
+    return;
+  }
+
+  const videoId = extractYouTubeVideoId(url);
+  if (videoId) {
+    const { element, refs } = appendChannelElement(`YouTube：${videoId}`, "YouTube");
+    refs.youtubePlayer.classList.remove("is-hidden");
+    refs.vol.max = "100";
+    refs.vol.value = "100";
+    refs.volValue.textContent = "100%";
+
+    const channelId = registerChannel({
+      element,
+      refs,
+      isYouTube: true,
+      isMuted: false
+    });
+
+    try {
+      const player = await createYouTubePlayer(refs.youtubeFrame, videoId);
+      const channel = channels.get(channelId);
+      if (!channel) {
+        player.destroy();
+        return;
+      }
+
+      channel.youtubePlayer = player;
+      player.setVolume(Number(refs.vol.value));
+      player.addEventListener("onStateChange", () => {
+        updateTransportButton(channel);
+        updateProgressUI(channel);
+      });
+
+      audioUrlInput.value = "";
+      updateImportButtons();
+      updateTransportButton(channel);
+      updateProgressUI(channel);
+      setStatus("已加入 YouTube 軌道（預設暫停）");
+    } catch (error) {
+      removeChannel(channelId);
+      setStatus(`加入 YouTube 失敗：${error.message}`);
+    }
+
     return;
   }
 

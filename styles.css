@@ -217,6 +217,23 @@ select:disabled {
   display: none;
 }
 
+.youtube-player {
+  margin: 8px 0 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #374151;
+  background: #000;
+}
+
+.youtube-player.is-hidden {
+  display: none;
+}
+
+.youtube-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
 .progress-bar {
   width: 100%;
 }
