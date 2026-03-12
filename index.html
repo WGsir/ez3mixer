@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EZ3 Mixer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>EZ3Mixer</h1>
+        <p>加入多個輸入裝置，調整各軌參數後即時混音播放。</p>
+      </header>
+
+      <section class="panel">
+        <div class="row">
+          <button id="initAudioBtn">啟用音訊</button>
+          <span id="status">尚未啟用</span>
+        </div>
+        <div class="row">
+          <label for="deviceSelect">輸入裝置</label>
+          <select id="deviceSelect" disabled></select>
+          <button id="addChannelBtn" disabled>加入軌道</button>
+        </div>
+        <div class="row">
+          <label for="audioFileInput">音訊檔案</label>
+          <input id="audioFileInput" type="file" accept="audio/*,.mp3" multiple />
+          <button id="addFileChannelBtn" disabled>加入檔案</button>
+        </div>
+        <div class="row">
+          <label for="audioUrlInput">音訊網址</label>
+          <input id="audioUrlInput" type="url" placeholder="https://example.com/audio.mp3" />
+          <button id="addUrlChannelBtn" disabled>加入網址</button>
+        </div>
+        <div class="row master">
+          <label for="masterVolume">Master 音量</label>
+          <input id="masterVolume" type="range" min="0" max="200" value="100" />
+          <output id="masterVolumeValue">100%</output>
+        </div>
+        <div class="row meter-row">
+          <label for="masterMeterFill">Master Level</label>
+          <div class="meter" aria-label="Master 音量顯示條">
+            <div id="masterMeterFill" class="meter-fill"></div>
+          </div>
+          <output id="masterMeterValue">0%</output>
+        </div>
+      </section>
+
+      <section>
+        <h2>軌道</h2>
+        <div id="channels" class="channels"></div>
+      </section>
+    </main>
+
+    <template id="channelTemplate">
+      <article class="channel">
+        <div class="channel-header">
+          <h3 class="channel-title"></h3>
+          <span class="source-badge"></span>
+        </div>
+        <div class="control-row">
+          <label>音量</label>
+          <input class="vol" type="range" min="0" max="200" value="100" />
+          <output class="vol-value">100%</output>
+        </div>
+        <div class="control-row meter-control-row">
+          <label>Level</label>
+          <div class="meter" aria-label="軌道音量顯示條">
+            <div class="meter-fill"></div>
+          </div>
+          <output class="meter-value">0%</output>
+        </div>
+        <div class="media-progress is-hidden">
+          <div class="progress-bar">
+            <input class="progress-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放進度條" />
+          </div>
+          <div class="progress-time">
+            <span class="progress-current">0:00</span>
+            <span class="progress-duration">0:00</span>
+          </div>
+        </div>
+        <details class="advanced-panel">
+          <summary>進階設定</summary>
+          <div class="advanced-content">
+            <div class="control-row">
+              <label>左右平衡</label>
+              <input class="pan" type="range" min="-100" max="100" value="0" />
+              <output class="pan-value">0</output>
+            </div>
+            <div class="control-row">
+              <label>低通濾波 (Hz)</label>
+              <input class="lp" type="range" min="300" max="20000" step="100" value="20000" />
+              <output class="lp-value">20000</output>
+            </div>
+          </div>
+        </details>
+        <div class="actions">
+          <button class="transport-btn" disabled>播放</button>
+          <button class="mute-btn">靜音</button>
+          <button class="remove-btn">移除</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
