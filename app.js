@@ -18,6 +18,15 @@ let masterGain;
 let masterAnalyser;
 let meterAnimationId;
 const channels = new Map();
+const LOW_LATENCY_AUDIO_SETTINGS = {
+  contextSampleRate: 44100,
+  captureSampleRate: 44100,
+  captureSampleSize: 16,
+  captureChannelCount: 1,
+  captureLatency: 0.01,
+  analyserFftSize: 1024,
+  gateAnalyserFftSize: 512
+};
 const MIC_DENOISE_SETTINGS = {
   highpassEnabledFrequency: 110,
   highpassDisabledFrequency: 20,
@@ -46,9 +55,22 @@ function updateMasterVolume() {
 
 function createAnalyser() {
   const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 2048;
+  analyser.fftSize = LOW_LATENCY_AUDIO_SETTINGS.analyserFftSize;
   analyser.smoothingTimeConstant = 0.8;
   return analyser;
+}
+
+function createLowLatencyAudioConstraints(deviceId) {
+  return {
+    deviceId: deviceId ? { exact: deviceId } : undefined,
+    channelCount: { ideal: LOW_LATENCY_AUDIO_SETTINGS.captureChannelCount },
+    sampleRate: { ideal: LOW_LATENCY_AUDIO_SETTINGS.captureSampleRate },
+    sampleSize: { ideal: LOW_LATENCY_AUDIO_SETTINGS.captureSampleSize },
+    latency: { ideal: LOW_LATENCY_AUDIO_SETTINGS.captureLatency },
+    noiseSuppression: false,
+    echoCancellation: false,
+    autoGainControl: false
+  };
 }
 
 function getAnalyserRms(analyser) {
@@ -147,7 +169,7 @@ function createMicDenoiseNodes() {
   highpass.frequency.value = MIC_DENOISE_SETTINGS.highpassDisabledFrequency;
 
   const gateAnalyser = audioContext.createAnalyser();
-  gateAnalyser.fftSize = 1024;
+  gateAnalyser.fftSize = LOW_LATENCY_AUDIO_SETTINGS.gateAnalyserFftSize;
   gateAnalyser.smoothingTimeConstant = 0.55;
 
   const gateGain = audioContext.createGain();
@@ -200,7 +222,10 @@ function registerChannel(channel) {
 
 async function ensureAudioInitialized() {
   if (!audioContext) {
-    audioContext = new AudioContext();
+    audioContext = new AudioContext({
+      latencyHint: "interactive",
+      sampleRate: LOW_LATENCY_AUDIO_SETTINGS.contextSampleRate
+    });
     masterGain = audioContext.createGain();
     masterAnalyser = createAnalyser();
     masterGain.connect(audioContext.destination);
@@ -212,7 +237,9 @@ async function ensureAudioInitialized() {
     await audioContext.resume();
   }
 
-  await navigator.mediaDevices.getUserMedia({ audio: true });
+  await navigator.mediaDevices.getUserMedia({
+    audio: createLowLatencyAudioConstraints()
+  });
   await refreshDevices();
   updateImportButtons();
   ensureMeterLoop();
@@ -287,6 +314,10 @@ async function applyMicrophoneTrackConstraints(channel, enabled) {
   }
 
   await track.applyConstraints({
+    channelCount: LOW_LATENCY_AUDIO_SETTINGS.captureChannelCount,
+    sampleRate: LOW_LATENCY_AUDIO_SETTINGS.captureSampleRate,
+    sampleSize: LOW_LATENCY_AUDIO_SETTINGS.captureSampleSize,
+    latency: LOW_LATENCY_AUDIO_SETTINGS.captureLatency,
     noiseSuppression: enabled,
     echoCancellation: false,
     autoGainControl: false
@@ -496,12 +527,7 @@ async function addChannel() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        deviceId: { exact: deviceId },
-        noiseSuppression: false,
-        echoCancellation: false,
-        autoGainControl: false
-      }
+      audio: createLowLatencyAudioConstraints(deviceId)
     });
 
     const source = audioContext.createMediaStreamSource(stream);
