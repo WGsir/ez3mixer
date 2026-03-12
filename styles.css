@@ -46,9 +46,6 @@ p {
   margin-bottom: 0;
 }
 
-label {
-  min-width: 100px;
-}
 
 select,
 button,
@@ -113,6 +110,12 @@ select:disabled {
   margin-bottom: 0;
 }
 
+.channel-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .source-badge {
   display: inline-flex;
   align-items: center;
@@ -124,6 +127,49 @@ select:disabled {
   background: rgba(37, 99, 235, 0.15);
   border: 1px solid rgba(96, 165, 250, 0.35);
   white-space: nowrap;
+}
+
+.header-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.header-toggle.is-hidden {
+  display: none;
+}
+
+.header-toggle input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.header-toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #94a3b8;
+  background: rgba(51, 65, 85, 0.35);
+  border: 1px solid rgba(71, 85, 105, 0.7);
+  white-space: nowrap;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.header-toggle input:checked + .header-toggle-chip {
+  color: #bfdbfe;
+  background: rgba(37, 99, 235, 0.15);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.header-toggle input:disabled + .header-toggle-chip {
+  opacity: 0.6;
 }
 
 .control-row {

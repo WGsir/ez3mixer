@@ -18,6 +18,14 @@ let masterGain;
 let masterAnalyser;
 let meterAnimationId;
 const channels = new Map();
+const MIC_DENOISE_SETTINGS = {
+  highpassEnabledFrequency: 110,
+  highpassDisabledFrequency: 20,
+  gateThreshold: 0.03,
+  gateClosedGain: 0.14,
+  attackTime: 0.015,
+  releaseTime: 0.09
+};
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -43,7 +51,7 @@ function createAnalyser() {
   return analyser;
 }
 
-function getLevelPercent(analyser) {
+function getAnalyserRms(analyser) {
   if (!analyser) {
     return 0;
   }
@@ -57,8 +65,29 @@ function getLevelPercent(analyser) {
     sum += sample * sample;
   }
 
-  const rms = Math.sqrt(sum / buffer.length);
+  return Math.sqrt(sum / buffer.length);
+}
+
+function getLevelPercent(analyser) {
+  const rms = getAnalyserRms(analyser);
   return Math.min(100, Math.round(rms * 140));
+}
+
+function updateMicDenoise(channel) {
+  if (!channel.isMicrophone || !channel.gateGain) {
+    return;
+  }
+
+  if (!channel.denoiseEnabled) {
+    channel.gateGain.gain.setTargetAtTime(1, audioContext.currentTime, MIC_DENOISE_SETTINGS.attackTime);
+    return;
+  }
+
+  const rms = getAnalyserRms(channel.gateAnalyser);
+  const isOpen = rms >= MIC_DENOISE_SETTINGS.gateThreshold;
+  const targetGain = isOpen ? 1 : MIC_DENOISE_SETTINGS.gateClosedGain;
+  const timeConstant = isOpen ? MIC_DENOISE_SETTINGS.attackTime : MIC_DENOISE_SETTINGS.releaseTime;
+  channel.gateGain.gain.setTargetAtTime(targetGain, audioContext.currentTime, timeConstant);
 }
 
 function paintMeter(fillEl, valueEl, level) {
@@ -74,6 +103,7 @@ function updateMeters() {
   paintMeter(masterMeterFill, masterMeterValue, getLevelPercent(masterAnalyser));
 
   channels.forEach((channel) => {
+    updateMicDenoise(channel);
     const level = getLevelPercent(channel.analyser);
     paintMeter(channel.refs.meterFill, channel.refs.meterValue, level);
   });
@@ -110,6 +140,26 @@ function createChannelNodes() {
   return { gain, filter, panner, analyser };
 }
 
+function createMicDenoiseNodes() {
+  const input = audioContext.createGain();
+  const highpass = audioContext.createBiquadFilter();
+  highpass.type = "highpass";
+  highpass.frequency.value = MIC_DENOISE_SETTINGS.highpassDisabledFrequency;
+
+  const gateAnalyser = audioContext.createAnalyser();
+  gateAnalyser.fftSize = 1024;
+  gateAnalyser.smoothingTimeConstant = 0.55;
+
+  const gateGain = audioContext.createGain();
+  gateGain.gain.value = 1;
+
+  input.connect(highpass);
+  highpass.connect(gateAnalyser);
+  highpass.connect(gateGain);
+
+  return { input, highpass, gateAnalyser, gateGain };
+}
+
 function appendChannelElement(title, sourceType) {
   const clone = channelTemplate.content.firstElementChild.cloneNode(true);
   clone.querySelector(".channel-title").textContent = title;
@@ -127,6 +177,8 @@ function appendChannelElement(title, sourceType) {
       lpValue: clone.querySelector(".lp-value"),
       meterFill: clone.querySelector(".meter-fill"),
       meterValue: clone.querySelector(".meter-value"),
+      headerToggle: clone.querySelector(".header-toggle"),
+      denoiseToggle: clone.querySelector(".denoise-toggle"),
       mediaProgress: clone.querySelector(".media-progress"),
       progressSeek: clone.querySelector(".progress-seek"),
       progressCurrent: clone.querySelector(".progress-current"),
@@ -201,6 +253,10 @@ function removeChannel(channelId) {
     URL.revokeObjectURL(channel.objectUrl);
   }
   channel.source.disconnect();
+  channel.inputNode?.disconnect();
+  channel.highpass?.disconnect();
+  channel.gateGain?.disconnect();
+  channel.gateAnalyser?.disconnect();
   channel.gain.disconnect();
   channel.filter.disconnect();
   channel.panner.disconnect();
@@ -222,6 +278,41 @@ function updateTransportButton(channel) {
 
   channel.refs.transportBtn.disabled = false;
   channel.refs.transportBtn.textContent = channel.mediaElement.paused ? "播放" : "暫停";
+}
+
+async function applyMicrophoneTrackConstraints(channel, enabled) {
+  const track = channel.stream?.getAudioTracks?.()[0];
+  if (!track?.applyConstraints) {
+    return;
+  }
+
+  await track.applyConstraints({
+    noiseSuppression: enabled,
+    echoCancellation: false,
+    autoGainControl: false
+  });
+}
+
+async function setMicrophoneDenoise(channel, enabled) {
+  channel.denoiseEnabled = enabled;
+
+  if (channel.highpass) {
+    channel.highpass.frequency.setTargetAtTime(
+      enabled ? MIC_DENOISE_SETTINGS.highpassEnabledFrequency : MIC_DENOISE_SETTINGS.highpassDisabledFrequency,
+      audioContext.currentTime,
+      0.02
+    );
+  }
+
+  if (channel.gateGain && !enabled) {
+    channel.gateGain.gain.setTargetAtTime(1, audioContext.currentTime, MIC_DENOISE_SETTINGS.attackTime);
+  }
+
+  try {
+    await applyMicrophoneTrackConstraints(channel, enabled);
+  } catch (error) {
+    setStatus(`瀏覽器降噪切換失敗：${error.message}`);
+  }
 }
 
 function formatTime(seconds) {
@@ -297,6 +388,20 @@ function wireChannelUI(channelId, refs) {
     removeChannel(channelId);
   });
 
+  refs.denoiseToggle.addEventListener("change", async () => {
+    if (!channel.isMicrophone) {
+      return;
+    }
+
+    refs.denoiseToggle.disabled = true;
+    try {
+      await setMicrophoneDenoise(channel, refs.denoiseToggle.checked);
+      setStatus(refs.denoiseToggle.checked ? "已啟用人聲降噪" : "已關閉人聲降噪");
+    } finally {
+      refs.denoiseToggle.disabled = false;
+    }
+  });
+
   refs.transportBtn.addEventListener("click", async () => {
     if (!channel.mediaElement) {
       return;
@@ -333,6 +438,13 @@ function wireChannelUI(channelId, refs) {
     channel.mediaElement.addEventListener("durationchange", () => updateProgressUI(channel));
     channel.mediaElement.addEventListener("seeking", () => updateProgressUI(channel));
     channel.mediaElement.addEventListener("seeked", () => updateProgressUI(channel));
+  }
+
+  if (channel.isMicrophone) {
+    refs.headerToggle.classList.remove("is-hidden");
+    refs.denoiseToggle.checked = channel.denoiseEnabled;
+  } else {
+    refs.headerToggle.classList.add("is-hidden");
   }
 
   updateTransportButton(channel);
@@ -384,13 +496,20 @@ async function addChannel() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: deviceId } }
+      audio: {
+        deviceId: { exact: deviceId },
+        noiseSuppression: false,
+        echoCancellation: false,
+        autoGainControl: false
+      }
     });
 
     const source = audioContext.createMediaStreamSource(stream);
     const { gain, filter, panner, analyser } = createChannelNodes();
+    const { input, highpass, gateAnalyser, gateGain } = createMicDenoiseNodes();
 
-    source.connect(gain);
+    source.connect(input);
+    gateGain.connect(gain);
 
     const deviceText =
       deviceSelect.options[deviceSelect.selectedIndex]?.textContent || "輸入裝置";
@@ -399,12 +518,18 @@ async function addChannel() {
     registerChannel({
       stream,
       source,
+      inputNode: input,
+      highpass,
+      gateAnalyser,
+      gateGain,
       gain,
       filter,
       panner,
       analyser,
       element,
       refs,
+      isMicrophone: true,
+      denoiseEnabled: false,
       isMuted: false
     });
 
