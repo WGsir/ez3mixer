@@ -225,9 +225,20 @@ function updateMeters() {
     masterMeterValue.textContent = `${masterLevel}%`;
 
     channels.forEach((channel) => {
+        if (channel.isYouTube) {
+            processHostYouTubeQueue(channel);
+            if (channel.youtubePlayer && typeof channel.youtubePlayer.getCurrentTime === 'function') {
+                const ct = channel.youtubePlayer.getCurrentTime() || 0;
+                const dur = channel.youtubePlayer.getDuration() || 0;
+                updateHostYouTubeProgress(channel, ct, dur);
+            }
+        }
+        
         const level = getLevelPercent(channel.analyser);
-        channel.refs.meterFill.style.width = `${level}%`;
-        channel.refs.meterValue.textContent = `${level}%`;
+        if (channel.refs && channel.refs.meterFill) {
+            channel.refs.meterFill.style.width = `${level}%`;
+            channel.refs.meterValue.textContent = `${level}%`;
+        }
     });
 
     meterAnimationId = requestAnimationFrame(updateMeters);
@@ -365,29 +376,63 @@ function updateHostYouTubeProgress(channel, currentTime, duration) {
 }
 
 function applyHostYouTubeControl(channel, payload) {
-    if (!channel?.isYouTube || !channel.youtubePlayer) {
+    if (!channel?.isYouTube) {
         return;
     }
 
-    const player = channel.youtubePlayer;
-    const clientTime = Number.isFinite(Number(payload.currentTime)) ? Math.max(0, Number(payload.currentTime)) : 0;
-    const duration = Number.isFinite(Number(payload.duration)) ? Math.max(0, Number(payload.duration)) : Number(player.getDuration?.() || 0);
-    const delaySeconds = Math.max(0, Number(channel.delaySeconds || 0));
-    const targetTime = Math.max(0, clientTime - delaySeconds);
-    const action = payload.action;
+    if (!channel.controlQueue) {
+        channel.controlQueue = [];
+    }
+    
+    channel.controlQueue.push({
+        wallTime: performance.now(),
+        payload: payload
+    });
+}
 
+function processHostYouTubeQueue(channel) {
+    if (!channel.controlQueue || !channel.youtubePlayer) return;
+
+    const now = performance.now();
+    const delayMs = Math.max(0, Number(channel.delaySeconds || 0)) * 1000;
+    const processTime = now - delayMs;
+
+    let lastSyncPayload = null;
+
+    while (channel.controlQueue.length > 0 && channel.controlQueue[0].wallTime <= processTime) {
+        const item = channel.controlQueue.shift();
+        
+        if (item.payload.action !== 'sync') {
+            executeHostYouTubeCommand(channel, item.payload);
+        } else {
+            lastSyncPayload = item.payload;
+        }
+    }
+
+    if (lastSyncPayload) {
+        executeHostYouTubeCommand(channel, lastSyncPayload);
+    }
+}
+
+function executeHostYouTubeCommand(channel, payload) {
+    const player = channel.youtubePlayer;
+    if (!player) return;
+
+    const action = payload.action;
+    const clientTime = Number.isFinite(Number(payload.currentTime)) ? Math.max(0, Number(payload.currentTime)) : 0;
+    
     if (action === "seek") {
-        player.seekTo(targetTime, true);
+        player.seekTo(clientTime, true);
     } else if (action === "play") {
-        player.seekTo(targetTime, true);
+        player.seekTo(clientTime, true);
         player.playVideo();
     } else if (action === "pause") {
-        player.seekTo(targetTime, true);
+        player.seekTo(clientTime, true);
         player.pauseVideo();
     } else if (action === "sync") {
         const hostCurrentTime = Number(player.getCurrentTime?.() || 0);
-        if (Math.abs(hostCurrentTime - targetTime) > 0.45) {
-            player.seekTo(targetTime, true);
+        if (Math.abs(hostCurrentTime - clientTime) > 0.5) {
+            player.seekTo(clientTime, true);
         }
 
         if (payload.isPlaying === true && !isYouTubePlaying(player)) {
@@ -397,9 +442,6 @@ function applyHostYouTubeControl(channel, payload) {
             player.pauseVideo();
         }
     }
-
-    channel.lastClientTime = clientTime;
-    updateHostYouTubeProgress(channel, targetTime, duration);
 }
 
 async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
@@ -489,12 +531,6 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
         const valMs = Number(refs.delay.value);
         channelData.delaySeconds = valMs / 1000;
         refs.delayValue.textContent = `${valMs}ms`;
-        applyHostYouTubeControl(channelData, {
-            action: "sync",
-            currentTime: channelData.lastClientTime,
-            duration: channelData.youtubePlayer?.getDuration?.(),
-            isPlaying: isYouTubePlaying(channelData.youtubePlayer)
-        });
     });
 
     refs.muteBtn.addEventListener("click", () => {
