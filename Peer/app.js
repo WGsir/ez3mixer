@@ -31,6 +31,8 @@ const clientDeviceSelect = document.getElementById("clientDeviceSelect");
 const clientAddMicBtn = document.getElementById("clientAddMicBtn");
 const clientFileInput = document.getElementById("clientFileInput");
 const clientAddFileBtn = document.getElementById("clientAddFileBtn");
+const clientUrlInput = document.getElementById("clientUrlInput");
+const clientAddUrlBtn = document.getElementById("clientAddUrlBtn");
 const clientTracksList = document.getElementById("clientTracksList");
 
 // 混音器變數 (Host 端)
@@ -419,6 +421,13 @@ function handleClientFullDisconnect(msg = "已斷線") {
     hostConnection = null;
 }
 
+function updateClientUrlButtonState() {
+    const hasUrl = clientUrlInput.value.trim().length > 0;
+    clientAddUrlBtn.disabled = clientUrlInput.disabled || !hasUrl;
+}
+
+clientUrlInput.addEventListener('input', updateClientUrlButtonState);
+
 // Client 初始化 Local Audio Context (用來擷取或混音，如果需要的話)
 async function ensureAudioInitializedClient() {
     if (!audioContext) {
@@ -450,6 +459,8 @@ clientInitAudioBtn.addEventListener('click', async () => {
         clientAddMicBtn.disabled = !hasInputs;
         clientFileInput.disabled = false;
         clientAddFileBtn.disabled = false;
+        clientUrlInput.disabled = false;
+        updateClientUrlButtonState();
 
         clientInitAudioBtn.disabled = true;
         clientInitAudioBtn.classList.add('active');
@@ -737,4 +748,81 @@ clientAddFileBtn.addEventListener('click', async () => {
     }
 
     clientFileInput.value = '';
+});
+
+// 傳送網址音訊
+clientAddUrlBtn.addEventListener('click', async () => {
+    if (!hostId) {
+        alert("請先輸入房主 ID");
+        return;
+    }
+
+    const url = clientUrlInput.value.trim();
+    if (!url) {
+        return;
+    }
+
+    try {
+        await ensureAudioInitializedClient();
+
+        const audio = new Audio();
+        audio.crossOrigin = "anonymous";
+        audio.src = url;
+        audio.controls = false;
+        audio.loop = false;
+
+        await new Promise((resolve, reject) => {
+            const onLoaded = () => {
+                cleanup();
+                resolve();
+            };
+            const onError = () => {
+                cleanup();
+                reject(new Error("網址音訊載入失敗，可能是連結錯誤或來源未開啟 CORS"));
+            };
+            const cleanup = () => {
+                audio.removeEventListener('loadedmetadata', onLoaded);
+                audio.removeEventListener('error', onError);
+            };
+
+            audio.addEventListener('loadedmetadata', onLoaded, { once: true });
+            audio.addEventListener('error', onError, { once: true });
+            audio.load();
+        });
+
+        const sourceNode = audioContext.createMediaElementSource(audio);
+        const destNode = audioContext.createMediaStreamDestination();
+        const analyser = createAnalyser();
+
+        sourceNode.connect(destNode);
+        sourceNode.connect(analyser);
+        sourceNode.connect(audioContext.destination);
+
+        let title = `網址: ${url}`;
+        try {
+            const parsedUrl = new URL(url);
+            const fileName = decodeURIComponent(parsedUrl.pathname.split('/').pop() || "");
+            title = fileName ? `網址: ${fileName}` : `網址: ${parsedUrl.hostname}`;
+        } catch {
+            // fallback 使用原始 URL
+        }
+
+        const call = peer.call(hostId, destNode.stream, { metadata: { title } });
+        addClientTrackItem(
+            title,
+            call,
+            null,
+            [audio],
+            audio,
+            analyser,
+            [sourceNode, destNode, analyser],
+            []
+        );
+
+        clientUrlInput.value = '';
+        updateClientUrlButtonState();
+    } catch (e) {
+        console.error(e);
+        alert(`無法傳送網址音訊: ${e.message}`);
+    }
 });
