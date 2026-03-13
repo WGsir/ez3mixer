@@ -26,6 +26,10 @@ p {
   margin-top: 0;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
 .panel {
   background: #1f2937;
   border: 1px solid #374151;
@@ -45,11 +49,6 @@ p {
 .row:last-child {
   margin-bottom: 0;
 }
-
-.row.is-hidden {
-  display: none;
-}
-
 
 select,
 button,
@@ -158,10 +157,6 @@ select:disabled {
   cursor: pointer;
 }
 
-.header-toggle.is-hidden {
-  display: none;
-}
-
 .header-toggle input {
   position: absolute;
   inset: 0;
@@ -217,10 +212,6 @@ select:disabled {
   grid-template-columns: 90px 1fr 60px;
 }
 
-.track-output-row.is-hidden {
-  display: none;
-}
-
 .meter {
   position: relative;
   width: 100%;
@@ -243,20 +234,12 @@ select:disabled {
   margin: 8px 0 12px;
 }
 
-.media-progress.is-hidden {
-  display: none;
-}
-
 .youtube-player {
   margin: 8px 0 12px;
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid #374151;
   background: #000;
-}
-
-.youtube-player.is-hidden {
-  display: none;
 }
 
 .youtube-frame {

@@ -531,7 +531,7 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
         removeBtn: clone.querySelector(".remove-btn")
     };
 
-    //refs.mediaProgress?.classList.remove("is-hidden");
+    refs.mediaProgress?.classList.remove("is-hidden");
     refs.progressSeek.disabled = true;
     refs.transportBtn.disabled = true;
     refs.transportBtn.textContent = "Client 控制";
@@ -543,6 +543,7 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
     refs.vol.max = "100";
     refs.vol.value = "100";
     refs.volValue.textContent = "100%";
+    clone.querySelector(".meter-control-row")?.classList.add("is-hidden");
 
     const hostVideoToggleBtn = createYouTubeVisibilityToggleButton(refs.youtubePlayer, false);
     if (refs.actions && refs.removeBtn) {
