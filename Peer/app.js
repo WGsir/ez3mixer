@@ -232,6 +232,8 @@ function initHost(attempt = 1) {
 }
 
 function createChannelNodes() {
+    const delay = audioContext.createDelay(5);
+    delay.delayTime.value = 0;
     const gain = audioContext.createGain();
     const filter = audioContext.createBiquadFilter();
     filter.type = "lowpass";
@@ -240,12 +242,13 @@ function createChannelNodes() {
     panner.pan.value = 0;
     const analyser = createAnalyser();
 
+    delay.connect(gain);
     gain.connect(filter);
     filter.connect(panner);
     panner.connect(analyser);
     analyser.connect(masterGain);
 
-    return { gain, filter, panner, analyser };
+    return { delay, gain, filter, panner, analyser };
 }
 
 function addHostMixingChannel(call, stream, title) {
@@ -258,8 +261,8 @@ function addHostMixingChannel(call, stream, title) {
     
     // 連接節點
     const sourceNode = audioContext.createMediaStreamSource(stream);
-    const { gain, filter, panner, analyser } = createChannelNodes();
-    sourceNode.connect(gain);
+    const { delay, gain, filter, panner, analyser } = createChannelNodes();
+    sourceNode.connect(delay);
 
     const clone = channelTemplate.content.firstElementChild.cloneNode(true);
     clone.querySelector(".channel-title").textContent = title;
@@ -272,6 +275,8 @@ function addHostMixingChannel(call, stream, title) {
         panValue: clone.querySelector(".pan-value"),
         lp: clone.querySelector(".lp"),
         lpValue: clone.querySelector(".lp-value"),
+        delay: clone.querySelector(".delay"),
+        delayValue: clone.querySelector(".delay-value"),
         meterFill: clone.querySelector(".meter-fill"),
         meterValue: clone.querySelector(".meter-value"),
         muteBtn: clone.querySelector(".mute-btn"),
@@ -279,7 +284,7 @@ function addHostMixingChannel(call, stream, title) {
     };
 
     const channelId = call.peer + "-" + Date.now();
-    const channelData = { id: channelId, call, stream, sourceNode, gain, filter, panner, analyser, dummyAudio, element: clone, refs, isMuted: false };
+    const channelData = { id: channelId, call, stream, sourceNode, delay, gain, filter, panner, analyser, dummyAudio, element: clone, refs, isMuted: false };
     channels.set(channelId, channelData);
 
     // UI 事件綁定
@@ -299,6 +304,12 @@ function addHostMixingChannel(call, stream, title) {
         const val = Number(refs.lp.value);
         filter.frequency.value = val;
         refs.lpValue.textContent = `${val}`;
+    });
+
+    refs.delay.addEventListener("input", () => {
+        const valMs = Number(refs.delay.value);
+        delay.delayTime.value = valMs / 1000;
+        refs.delayValue.textContent = `${valMs}ms`;
     });
 
     refs.muteBtn.addEventListener("click", () => {
@@ -321,6 +332,7 @@ function removeHostChannel(channelId) {
     if (!channel) return;
     
     channel.sourceNode?.disconnect();
+    channel.delay?.disconnect();
     channel.gain?.disconnect();
     channel.filter?.disconnect();
     channel.panner?.disconnect();
@@ -696,7 +708,7 @@ clientAddFileBtn.addEventListener('click', async () => {
         const audio = new Audio();
         audio.src = objectUrl;
         audio.controls = false;
-        audio.loop = true;
+        audio.loop = false;
         
         // 為了讓使用者也能聽見，同時擷取串流，我們可以直接呼叫 captureStream()
         // 或使用 Web Audio API: source -> destination -> peer, source -> audioContext.destination
