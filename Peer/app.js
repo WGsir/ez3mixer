@@ -13,6 +13,8 @@ const clientSection = document.getElementById("clientSection");
 const hostIdDisplay = document.getElementById("hostIdDisplay");
 const hostInitAudioBtn = document.getElementById("hostInitAudioBtn");
 const hostStatus = document.getElementById("hostStatus");
+const hostOutputRow = document.getElementById("hostOutputRow");
+const hostOutputSelect = document.getElementById("hostOutputSelect");
 const masterVolume = document.getElementById("masterVolume");
 const masterVolumeValue = document.getElementById("masterVolumeValue");
 const masterMeterFill = document.getElementById("masterMeterFill");
@@ -49,6 +51,12 @@ let youtubeApiReadyPromise;
 const hostDataConnections = new Map();
 const hostYouTubeTrackMap = new Map();
 const clientYouTubeTracks = new Map();
+let hostOutputDestination = null;
+let hostOutputMonitor = null;
+let hostOutputDeviceId = "";
+let hostAvailableOutputDevices = [];
+const supportsHostOutputSelection =
+    typeof HTMLMediaElement !== "undefined" && typeof HTMLMediaElement.prototype.setSinkId === "function";
 
 // UI 切換邏輯
 btnHostMode.addEventListener('click', () => {
@@ -283,15 +291,94 @@ async function ensureAudioInitializedHost() {
         masterGain = audioContext.createGain();
         masterAnalyser = createAnalyser();
         masterGain.connect(masterAnalyser);
-        masterGain.connect(audioContext.destination);
+        if (supportsHostOutputSelection) {
+            hostOutputDestination = audioContext.createMediaStreamDestination();
+            masterGain.connect(hostOutputDestination);
+
+            hostOutputMonitor = new Audio();
+            hostOutputMonitor.autoplay = true;
+            hostOutputMonitor.srcObject = hostOutputDestination.stream;
+        } else {
+            masterGain.connect(audioContext.destination);
+        }
         updateMasterVolume();
     }
     if (audioContext.state !== "running") {
         await audioContext.resume();
     }
+
+    if (supportsHostOutputSelection) {
+        await refreshHostOutputDevices();
+        if (hostOutputMonitor) {
+            await hostOutputMonitor.play();
+        }
+    }
+
     if (!meterAnimationId) {
         meterAnimationId = requestAnimationFrame(updateMeters);
     }
+}
+
+async function applyHostOutputDevice(deviceId) {
+    if (!supportsHostOutputSelection || !hostOutputMonitor) {
+        return;
+    }
+
+    const nextDeviceId = deviceId || "";
+    await hostOutputMonitor.setSinkId(nextDeviceId);
+    hostOutputDeviceId = nextDeviceId;
+
+    if (hostOutputSelect) {
+        hostOutputSelect.value = hostOutputDeviceId;
+    }
+
+    await hostOutputMonitor.play();
+}
+
+async function refreshHostOutputDevices() {
+    if (!hostOutputRow || !hostOutputSelect) {
+        return;
+    }
+
+    if (!supportsHostOutputSelection) {
+        hostOutputRow.classList.remove("is-hidden");
+        hostOutputSelect.innerHTML = "";
+        const unsupportedOption = document.createElement("option");
+        unsupportedOption.value = "";
+        unsupportedOption.textContent = "此瀏覽器不支援切換輸出裝置";
+        hostOutputSelect.appendChild(unsupportedOption);
+        hostOutputSelect.disabled = true;
+        return;
+    }
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    hostAvailableOutputDevices = devices.filter((device) => device.kind === "audiooutput");
+
+    hostOutputRow.classList.remove("is-hidden");
+    hostOutputSelect.innerHTML = "";
+
+    hostAvailableOutputDevices.forEach((device, index) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || `輸出裝置 ${index + 1}`;
+        hostOutputSelect.appendChild(option);
+    });
+
+    const hasOutputs = hostAvailableOutputDevices.length > 0;
+    hostOutputSelect.disabled = !hasOutputs;
+
+    if (!hasOutputs) {
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "找不到輸出裝置";
+        hostOutputSelect.appendChild(emptyOption);
+        hostOutputSelect.disabled = true;
+        return;
+    }
+
+    const hasCurrent = hostAvailableOutputDevices.some((device) => device.deviceId === hostOutputDeviceId);
+    const nextDeviceId = hasCurrent ? hostOutputDeviceId : hostAvailableOutputDevices[0].deviceId;
+    await applyHostOutputDevice(nextDeviceId);
 }
 
 hostInitAudioBtn.addEventListener('click', async () => {
@@ -302,6 +389,18 @@ hostInitAudioBtn.addEventListener('click', async () => {
         hostInitAudioBtn.disabled = true;
     } catch (e) {
         hostStatus.innerHTML = `無法啟用音訊: ${e.message}`;
+        hostStatus.style.color = "#fca5a5";
+    }
+});
+
+hostOutputSelect?.addEventListener('change', async () => {
+    try {
+        await ensureAudioInitializedHost();
+        await applyHostOutputDevice(hostOutputSelect.value);
+        hostStatus.innerHTML = "已切換輸出裝置";
+        hostStatus.style.color = "#a7f3d0";
+    } catch (e) {
+        hostStatus.innerHTML = `切換輸出裝置失敗: ${e.message}`;
         hostStatus.style.color = "#fca5a5";
     }
 });
@@ -1590,5 +1689,14 @@ clientAddYoutubeBtn.addEventListener('click', async () => {
         updateClientImportButtons();
     } catch (error) {
         alert(`無法加入 YouTube 軌道: ${error.message}`);
+    }
+});
+
+navigator.mediaDevices?.addEventListener('devicechange', () => {
+    if (mode === 'host' && audioContext) {
+        refreshHostOutputDevices().catch((error) => {
+            hostStatus.innerHTML = `更新輸出裝置失敗: ${error.message}`;
+            hostStatus.style.color = "#fca5a5";
+        });
     }
 });
