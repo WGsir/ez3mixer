@@ -590,7 +590,7 @@ function handleHostControlMessage(conn, payload) {
         const key = buildPeerTrackKey(conn.peer, payload.trackId);
         const channelId = hostYouTubeTrackMap.get(key);
         if (channelId) {
-            removeHostChannel(channelId);
+            removeHostChannel(channelId, { notifyClient: false });
         }
         return;
     }
@@ -703,9 +703,21 @@ function addHostMixingChannel(call, stream, title) {
     return channelId;
 }
 
-function removeHostChannel(channelId) {
+function removeHostChannel(channelId, options = {}) {
     const channel = channels.get(channelId);
     if (!channel) return;
+
+    const notifyClient = options.notifyClient !== false;
+
+    if (notifyClient && channel.isYouTube && channel.ownerPeerId && channel.remoteTrackId) {
+        const ownerConn = hostDataConnections.get(channel.ownerPeerId);
+        if (ownerConn?.open) {
+            ownerConn.send({
+                type: "yt-force-remove",
+                trackId: channel.remoteTrackId
+            });
+        }
+    }
 
     if (channel.isYouTube && channel.ownerPeerId && channel.remoteTrackId) {
         const key = buildPeerTrackKey(channel.ownerPeerId, channel.remoteTrackId);
@@ -764,6 +776,10 @@ clientConnectBtn.addEventListener('click', () => {
         clientDisconnectBtn.style.display = "inline-block";
         remoteIdInput.disabled = true;
         clientControls.classList.remove('is-hidden');
+    });
+
+    hostConnection.on('data', (payload) => {
+        handleClientHostMessage(payload);
     });
 
     hostConnection.on('close', () => {
@@ -1227,6 +1243,21 @@ function sendYouTubeControlToHost(payload) {
         return;
     }
     hostConnection.send(payload);
+}
+
+function handleClientHostMessage(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return;
+    }
+
+    if (payload.type === 'yt-force-remove') {
+        const track = clientYouTubeTracks.get(payload.trackId);
+        if (!track) {
+            return;
+        }
+
+        track.cleanupAction?.(false);
+    }
 }
 
 function addClientYouTubeTrack(videoId, rawUrl) {
