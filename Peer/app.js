@@ -406,6 +406,18 @@ function updateHostYouTubeProgress(channel, currentTime, duration) {
     refs.progressDuration.textContent = formatClientTime(safeDuration);
 }
 
+function updateHostYouTubeChannelTitle(channel, title) {
+    const safeTitle = typeof title === "string" ? title.trim() : "";
+    if (!safeTitle) {
+        return;
+    }
+
+    const titleElement = channel?.element?.querySelector?.(".channel-title");
+    if (titleElement) {
+        titleElement.textContent = safeTitle;
+    }
+}
+
 function applyHostYouTubeControl(channel, payload) {
     if (!channel?.isYouTube) {
         return;
@@ -519,7 +531,7 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
         removeBtn: clone.querySelector(".remove-btn")
     };
 
-    refs.mediaProgress?.classList.remove("is-hidden");
+    //refs.mediaProgress?.classList.remove("is-hidden");
     refs.progressSeek.disabled = true;
     refs.transportBtn.disabled = true;
     refs.transportBtn.textContent = "Client 控制";
@@ -643,6 +655,18 @@ function handleHostControlMessage(conn, payload) {
 
         const channel = channels.get(channelId);
         applyHostYouTubeControl(channel, payload);
+        return;
+    }
+
+    if (payload.type === "yt-title") {
+        const key = buildPeerTrackKey(conn.peer, payload.trackId);
+        const channelId = hostYouTubeTrackMap.get(key);
+        if (!channelId) {
+            return;
+        }
+
+        const channel = channels.get(channelId);
+        updateHostYouTubeChannelTitle(channel, payload.title);
     }
 }
 
@@ -1391,6 +1415,29 @@ function addClientYouTubeTrack(videoId, rawUrl) {
         progressDuration.textContent = formatClientTime(duration);
     };
 
+    const getResolvedYouTubeTitle = () => {
+        const resolvedTitle = player?.getVideoData?.()?.title;
+        if (typeof resolvedTitle !== 'string') {
+            return '';
+        }
+        const trimmed = resolvedTitle.trim();
+        return trimmed && trimmed !== 'YouTube' ? trimmed : '';
+    };
+
+    const syncResolvedTitle = () => {
+        const resolvedTitle = getResolvedYouTubeTitle();
+        if (!resolvedTitle) {
+            return;
+        }
+
+        nameEl.textContent = resolvedTitle;
+        sendYouTubeControlToHost({
+            type: 'yt-title',
+            trackId,
+            title: resolvedTitle
+        });
+    };
+
     const sendControl = (action) => {
         if (!player) {
             return;
@@ -1468,7 +1515,7 @@ function addClientYouTubeTrack(videoId, rawUrl) {
         type: 'yt-add',
         trackId,
         videoId,
-        title: `YouTube: ${videoId}`,
+        title,
         sourceUrl: rawUrl
     });
 
@@ -1482,10 +1529,12 @@ function addClientYouTubeTrack(videoId, rawUrl) {
             player = createdPlayer;
             lockYouTubeIframeInteraction(player);
             player.pauseVideo();
+            syncResolvedTitle();
 
             player.addEventListener('onStateChange', () => {
                 updateTransportButton();
                 updateProgress();
+                syncResolvedTitle();
 
                 const state = player.getPlayerState?.();
                 if (state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.ENDED) {
