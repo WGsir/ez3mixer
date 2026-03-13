@@ -176,7 +176,8 @@ async function createYouTubePlayer(frameElement, videoId) {
             videoId,
             playerVars: {
                 autoplay: 0,
-                controls: 1,
+                controls: 0,
+                disablekb: 1,
                 rel: 0,
                 modestbranding: 1,
                 playsinline: 1
@@ -186,6 +187,36 @@ async function createYouTubePlayer(frameElement, videoId) {
             }
         });
     });
+}
+
+function lockYouTubeIframeInteraction(player) {
+    const iframe = player?.getIframe?.();
+    if (!iframe) {
+        return;
+    }
+
+    iframe.style.pointerEvents = "none";
+    iframe.setAttribute("tabindex", "-1");
+    iframe.setAttribute("aria-hidden", "true");
+}
+
+function createYouTubeVisibilityToggleButton(youtubePlayerElement, defaultVisible = false) {
+    const button = document.createElement("button");
+    button.type = "button";
+
+    let isVisible = defaultVisible;
+    const applyVisibility = () => {
+        youtubePlayerElement?.classList.toggle("is-hidden", !isVisible);
+        button.textContent = isVisible ? "隱藏影片" : "顯示影片";
+    };
+
+    button.addEventListener("click", () => {
+        isVisible = !isVisible;
+        applyVisibility();
+    });
+
+    applyVisibility();
+    return button;
 }
 
 function isYouTubePlaying(player) {
@@ -454,7 +485,7 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
     const key = buildPeerTrackKey(peerId, trackId);
     const existingChannelId = hostYouTubeTrackMap.get(key);
     if (existingChannelId) {
-        removeHostChannel(existingChannelId);
+        removeHostChannel(existingChannelId, { notifyClient: false });
     }
 
     const clone = channelTemplate.content.firstElementChild.cloneNode(true);
@@ -482,13 +513,13 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
         progressDuration: clone.querySelector(".progress-duration"),
         youtubePlayer: clone.querySelector(".youtube-player"),
         youtubeFrame: clone.querySelector(".youtube-frame"),
+        actions: clone.querySelector(".actions"),
         transportBtn: clone.querySelector(".transport-btn"),
         muteBtn: clone.querySelector(".mute-btn"),
         removeBtn: clone.querySelector(".remove-btn")
     };
 
     refs.mediaProgress?.classList.remove("is-hidden");
-    refs.youtubePlayer?.classList.remove("is-hidden");
     refs.progressSeek.disabled = true;
     refs.transportBtn.disabled = true;
     refs.transportBtn.textContent = "Client 控制";
@@ -500,6 +531,13 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
     refs.vol.max = "100";
     refs.vol.value = "100";
     refs.volValue.textContent = "100%";
+
+    const hostVideoToggleBtn = createYouTubeVisibilityToggleButton(refs.youtubePlayer, false);
+    if (refs.actions && refs.removeBtn) {
+        refs.actions.insertBefore(hostVideoToggleBtn, refs.removeBtn);
+    } else if (refs.actions) {
+        refs.actions.appendChild(hostVideoToggleBtn);
+    }
 
     const channelId = `yt-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
     const channelData = {
@@ -558,6 +596,7 @@ async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
         }
 
         channel.youtubePlayer = player;
+        lockYouTubeIframeInteraction(player);
         player.setVolume(Number(refs.vol.value));
         player.pauseVideo();
         updateHostYouTubeProgress(channel, 0, Number(player.getDuration?.() || 0));
@@ -1302,6 +1341,8 @@ function addClientYouTubeTrack(videoId, rawUrl) {
     transportBtn.textContent = '播放';
     transportBtn.disabled = true;
 
+    const videoToggleBtn = createYouTubeVisibilityToggleButton(youtubePlayerDiv, false);
+
     const stopBtn = document.createElement('button');
     stopBtn.className = 'warning';
     stopBtn.textContent = '停止同步';
@@ -1309,6 +1350,7 @@ function addClientYouTubeTrack(videoId, rawUrl) {
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'actions';
     actionsDiv.appendChild(transportBtn);
+    actionsDiv.appendChild(videoToggleBtn);
     actionsDiv.appendChild(stopBtn);
 
     div.appendChild(headerDiv);
@@ -1438,6 +1480,7 @@ function addClientYouTubeTrack(videoId, rawUrl) {
             }
 
             player = createdPlayer;
+            lockYouTubeIframeInteraction(player);
             player.pauseVideo();
 
             player.addEventListener('onStateChange', () => {
