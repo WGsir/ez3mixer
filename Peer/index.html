@@ -98,6 +98,11 @@
             <input id="clientUrlInput" type="url" placeholder=".mp3/.mp4/.wav" disabled />
             <button id="clientAddUrlBtn" disabled>傳送網址軌道</button>
           </div>
+          <div class="row">
+            <label for="clientYoutubeInput">YouTube</label>
+            <input id="clientYoutubeInput" type="url" placeholder="https://www.youtube.com/watch?v=..." disabled />
+            <button id="clientAddYoutubeBtn" disabled>加入 YouTube 軌道</button>
+          </div>
 
           <div class="client-tracks" id="clientTracksList">
             <h3>已傳送的軌道</h3>
@@ -128,6 +133,18 @@
           </div>
           <output class="meter-value">0%</output>
         </div>
+        <div class="media-progress is-hidden">
+          <div class="progress-bar">
+            <input class="progress-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放進度條" />
+          </div>
+          <div class="progress-time">
+            <span class="progress-current">0:00</span>
+            <span class="progress-duration">0:00</span>
+          </div>
+        </div>
+        <div class="youtube-player is-hidden">
+          <div class="youtube-frame"></div>
+        </div>
         <details class="advanced-panel">
           <summary>進階設定</summary>
           <div class="advanced-content">
@@ -149,6 +166,7 @@
           </div>
         </details>
         <div class="actions">
+          <button class="transport-btn" disabled>播放</button>
           <button class="mute-btn">靜音</button>
           <button class="remove-btn">斷開連線</button>
         </div>

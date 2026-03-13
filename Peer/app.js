@@ -33,6 +33,8 @@ const clientFileInput = document.getElementById("clientFileInput");
 const clientAddFileBtn = document.getElementById("clientAddFileBtn");
 const clientUrlInput = document.getElementById("clientUrlInput");
 const clientAddUrlBtn = document.getElementById("clientAddUrlBtn");
+const clientYoutubeInput = document.getElementById("clientYoutubeInput");
+const clientAddYoutubeBtn = document.getElementById("clientAddYoutubeBtn");
 const clientTracksList = document.getElementById("clientTracksList");
 
 // 混音器變數 (Host 端)
@@ -43,6 +45,10 @@ const channels = new Map();
 const keepAliveAudios = new Set(); // 避免 Chrome WebRTC 音訊 GC 問題
 const clientTrackMeters = new Map();
 let clientMeterAnimationId;
+let youtubeApiReadyPromise;
+const hostDataConnections = new Map();
+const hostYouTubeTrackMap = new Map();
+const clientYouTubeTracks = new Map();
 
 // UI 切換邏輯
 btnHostMode.addEventListener('click', () => {
@@ -102,6 +108,93 @@ function formatClientTime(seconds) {
     const minutes = Math.floor(totalSeconds / 60);
     const remainder = totalSeconds % 60;
     return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function extractYouTubeVideoId(url) {
+    try {
+        const parsedUrl = new URL(url);
+        const host = parsedUrl.hostname.replace(/^www\./, "").toLowerCase();
+
+        if (host === "youtu.be") {
+            const id = parsedUrl.pathname.split("/").filter(Boolean)[0];
+            return id || null;
+        }
+
+        if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+            if (parsedUrl.pathname === "/watch") {
+                return parsedUrl.searchParams.get("v");
+            }
+
+            const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
+            if (pathSegments[0] === "embed" || pathSegments[0] === "shorts") {
+                return pathSegments[1] || null;
+            }
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
+async function ensureYouTubeApiReady() {
+    if (window.YT?.Player) {
+        return;
+    }
+
+    if (!youtubeApiReadyPromise) {
+        youtubeApiReadyPromise = new Promise((resolve, reject) => {
+            const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+            const script = existingScript || document.createElement("script");
+
+            if (!existingScript) {
+                script.src = "https://www.youtube.com/iframe_api";
+                script.async = true;
+                document.head.appendChild(script);
+            }
+
+            script.addEventListener("error", () => {
+                reject(new Error("無法載入 YouTube IFrame API"));
+            });
+
+            const previousReady = window.onYouTubeIframeAPIReady;
+            window.onYouTubeIframeAPIReady = () => {
+                previousReady?.();
+                resolve();
+            };
+        });
+    }
+
+    await youtubeApiReadyPromise;
+}
+
+async function createYouTubePlayer(frameElement, videoId) {
+    await ensureYouTubeApiReady();
+
+    return new Promise((resolve) => {
+        const player = new window.YT.Player(frameElement, {
+            videoId,
+            playerVars: {
+                autoplay: 0,
+                controls: 1,
+                rel: 0,
+                modestbranding: 1,
+                playsinline: 1
+            },
+            events: {
+                onReady: () => resolve(player)
+            }
+        });
+    });
+}
+
+function isYouTubePlaying(player) {
+    const state = player?.getPlayerState?.();
+    return state === window.YT?.PlayerState?.PLAYING || state === window.YT?.PlayerState?.BUFFERING;
+}
+
+function buildPeerTrackKey(peerId, trackId) {
+    return `${peerId}:${trackId}`;
 }
 
 function ensureClientMeterLoop() {
@@ -203,7 +296,7 @@ function initHost(attempt = 1) {
 
     // 接受客戶端連線確認 (Data Connection)
     peer.on('connection', (conn) => {
-        console.log("Client connected via DataConnection:", conn.peer);
+        handleHostDataConnection(conn);
     });
 
     peer.on('call', (call) => {
@@ -231,6 +324,251 @@ function initHost(attempt = 1) {
             if (currentChannelId) removeHostChannel(currentChannelId);
         });
     });
+}
+
+function handleHostDataConnection(conn) {
+    hostDataConnections.set(conn.peer, conn);
+    console.log("Client connected via DataConnection:", conn.peer);
+
+    conn.on('data', (payload) => {
+        handleHostControlMessage(conn, payload);
+    });
+
+    conn.on('close', () => {
+        hostDataConnections.delete(conn.peer);
+        removeHostYouTubeChannelsByPeer(conn.peer);
+    });
+
+    conn.on('error', () => {
+        hostDataConnections.delete(conn.peer);
+        removeHostYouTubeChannelsByPeer(conn.peer);
+    });
+}
+
+function updateHostYouTubeProgress(channel, currentTime, duration) {
+    const refs = channel.refs;
+    if (!refs?.mediaProgress) {
+        return;
+    }
+
+    refs.mediaProgress.classList.remove("is-hidden");
+    const safeDuration = Number.isFinite(duration) ? Math.max(0, duration) : 0;
+    const safeCurrentTime = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+    const progressPercent = safeDuration > 0 ? (safeCurrentTime / safeDuration) * 100 : 0;
+    const clampedPercent = Math.min(100, Math.max(0, progressPercent));
+
+    refs.progressSeek.disabled = true;
+    refs.progressSeek.value = String(Math.round((clampedPercent / 100) * 1000));
+    refs.progressSeek.style.setProperty("--progress", `${clampedPercent}%`);
+    refs.progressCurrent.textContent = formatClientTime(safeCurrentTime);
+    refs.progressDuration.textContent = formatClientTime(safeDuration);
+}
+
+function applyHostYouTubeControl(channel, payload) {
+    if (!channel?.isYouTube || !channel.youtubePlayer) {
+        return;
+    }
+
+    const player = channel.youtubePlayer;
+    const clientTime = Number.isFinite(Number(payload.currentTime)) ? Math.max(0, Number(payload.currentTime)) : 0;
+    const duration = Number.isFinite(Number(payload.duration)) ? Math.max(0, Number(payload.duration)) : Number(player.getDuration?.() || 0);
+    const delaySeconds = Math.max(0, Number(channel.delaySeconds || 0));
+    const targetTime = Math.max(0, clientTime - delaySeconds);
+    const action = payload.action;
+
+    if (action === "seek") {
+        player.seekTo(targetTime, true);
+    } else if (action === "play") {
+        player.seekTo(targetTime, true);
+        player.playVideo();
+    } else if (action === "pause") {
+        player.seekTo(targetTime, true);
+        player.pauseVideo();
+    } else if (action === "sync") {
+        const hostCurrentTime = Number(player.getCurrentTime?.() || 0);
+        if (Math.abs(hostCurrentTime - targetTime) > 0.45) {
+            player.seekTo(targetTime, true);
+        }
+
+        if (payload.isPlaying === true && !isYouTubePlaying(player)) {
+            player.playVideo();
+        }
+        if (payload.isPlaying === false && isYouTubePlaying(player)) {
+            player.pauseVideo();
+        }
+    }
+
+    channel.lastClientTime = clientTime;
+    updateHostYouTubeProgress(channel, targetTime, duration);
+}
+
+async function addHostYouTubeChannel(peerId, trackId, videoId, title) {
+    if (!videoId || !trackId) {
+        return;
+    }
+
+    await ensureAudioInitializedHost();
+
+    const key = buildPeerTrackKey(peerId, trackId);
+    const existingChannelId = hostYouTubeTrackMap.get(key);
+    if (existingChannelId) {
+        removeHostChannel(existingChannelId);
+    }
+
+    const clone = channelTemplate.content.firstElementChild.cloneNode(true);
+    clone.querySelector(".channel-title").textContent = title || `YouTube: ${videoId}`;
+    const sourceBadge = clone.querySelector(".source-badge");
+    if (sourceBadge) {
+        sourceBadge.textContent = "YouTube（Client 控制）";
+    }
+    channelsContainer.appendChild(clone);
+
+    const refs = {
+        vol: clone.querySelector(".vol"),
+        volValue: clone.querySelector(".vol-value"),
+        pan: clone.querySelector(".pan"),
+        panValue: clone.querySelector(".pan-value"),
+        lp: clone.querySelector(".lp"),
+        lpValue: clone.querySelector(".lp-value"),
+        delay: clone.querySelector(".delay"),
+        delayValue: clone.querySelector(".delay-value"),
+        meterFill: clone.querySelector(".meter-fill"),
+        meterValue: clone.querySelector(".meter-value"),
+        mediaProgress: clone.querySelector(".media-progress"),
+        progressSeek: clone.querySelector(".progress-seek"),
+        progressCurrent: clone.querySelector(".progress-current"),
+        progressDuration: clone.querySelector(".progress-duration"),
+        youtubePlayer: clone.querySelector(".youtube-player"),
+        youtubeFrame: clone.querySelector(".youtube-frame"),
+        transportBtn: clone.querySelector(".transport-btn"),
+        muteBtn: clone.querySelector(".mute-btn"),
+        removeBtn: clone.querySelector(".remove-btn")
+    };
+
+    refs.mediaProgress?.classList.remove("is-hidden");
+    refs.youtubePlayer?.classList.remove("is-hidden");
+    refs.progressSeek.disabled = true;
+    refs.transportBtn.disabled = true;
+    refs.transportBtn.textContent = "Client 控制";
+    refs.pan.disabled = true;
+    refs.lp.disabled = true;
+    refs.panValue.textContent = "-";
+    refs.lpValue.textContent = "-";
+    refs.removeBtn.textContent = "移除";
+    refs.vol.max = "100";
+    refs.vol.value = "100";
+    refs.volValue.textContent = "100%";
+
+    const channelId = `yt-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const channelData = {
+        id: channelId,
+        ownerPeerId: peerId,
+        remoteTrackId: trackId,
+        videoId,
+        delaySeconds: 0,
+        isYouTube: true,
+        isMuted: false,
+        refs,
+        element: clone,
+        analyser: null,
+        youtubePlayer: null,
+        lastClientTime: 0
+    };
+    channels.set(channelId, channelData);
+    hostYouTubeTrackMap.set(key, channelId);
+
+    refs.vol.addEventListener("input", () => {
+        const val = Number(refs.vol.value);
+        if (!channelData.isMuted) {
+            channelData.youtubePlayer?.setVolume?.(Math.min(100, val));
+        }
+        refs.volValue.textContent = `${val}%`;
+    });
+
+    refs.delay.addEventListener("input", () => {
+        const valMs = Number(refs.delay.value);
+        channelData.delaySeconds = valMs / 1000;
+        refs.delayValue.textContent = `${valMs}ms`;
+        applyHostYouTubeControl(channelData, {
+            action: "sync",
+            currentTime: channelData.lastClientTime,
+            duration: channelData.youtubePlayer?.getDuration?.(),
+            isPlaying: isYouTubePlaying(channelData.youtubePlayer)
+        });
+    });
+
+    refs.muteBtn.addEventListener("click", () => {
+        channelData.isMuted = !channelData.isMuted;
+        if (channelData.isMuted) {
+            channelData.youtubePlayer?.mute?.();
+        } else {
+            channelData.youtubePlayer?.unMute?.();
+            channelData.youtubePlayer?.setVolume?.(Math.min(100, Number(refs.vol.value)));
+        }
+        refs.muteBtn.textContent = channelData.isMuted ? "取消靜音" : "靜音";
+        refs.muteBtn.style.color = channelData.isMuted ? "#fca5a5" : "#e5e7eb";
+    });
+
+    refs.removeBtn.addEventListener("click", () => {
+        removeHostChannel(channelId);
+    });
+
+    try {
+        const player = await createYouTubePlayer(refs.youtubeFrame, videoId);
+        const channel = channels.get(channelId);
+        if (!channel) {
+            player.destroy();
+            return;
+        }
+
+        channel.youtubePlayer = player;
+        player.setVolume(Number(refs.vol.value));
+        player.pauseVideo();
+        updateHostYouTubeProgress(channel, 0, Number(player.getDuration?.() || 0));
+    } catch (error) {
+        removeHostChannel(channelId);
+        hostStatus.textContent = `加入 YouTube 軌道失敗: ${error.message}`;
+        hostStatus.style.color = "#fca5a5";
+    }
+}
+
+function removeHostYouTubeChannelsByPeer(peerId) {
+    channels.forEach((channel, channelId) => {
+        if (channel.ownerPeerId === peerId && channel.isYouTube) {
+            removeHostChannel(channelId);
+        }
+    });
+}
+
+function handleHostControlMessage(conn, payload) {
+    if (!payload || typeof payload !== "object") {
+        return;
+    }
+
+    if (payload.type === "yt-add") {
+        addHostYouTubeChannel(conn.peer, payload.trackId, payload.videoId, payload.title);
+        return;
+    }
+
+    if (payload.type === "yt-remove") {
+        const key = buildPeerTrackKey(conn.peer, payload.trackId);
+        const channelId = hostYouTubeTrackMap.get(key);
+        if (channelId) {
+            removeHostChannel(channelId);
+        }
+        return;
+    }
+
+    if (payload.type === "yt-control") {
+        const key = buildPeerTrackKey(conn.peer, payload.trackId);
+        const channelId = hostYouTubeTrackMap.get(key);
+        if (!channelId) {
+            return;
+        }
+
+        const channel = channels.get(channelId);
+        applyHostYouTubeControl(channel, payload);
+    }
 }
 
 function createChannelNodes() {
@@ -332,6 +670,11 @@ function addHostMixingChannel(call, stream, title) {
 function removeHostChannel(channelId) {
     const channel = channels.get(channelId);
     if (!channel) return;
+
+    if (channel.isYouTube && channel.ownerPeerId && channel.remoteTrackId) {
+        const key = buildPeerTrackKey(channel.ownerPeerId, channel.remoteTrackId);
+        hostYouTubeTrackMap.delete(key);
+    }
     
     channel.sourceNode?.disconnect();
     channel.delay?.disconnect();
@@ -339,6 +682,7 @@ function removeHostChannel(channelId) {
     channel.filter?.disconnect();
     channel.panner?.disconnect();
     channel.analyser?.disconnect();
+    channel.youtubePlayer?.destroy?.();
     
     if (channel.dummyAudio) {
         channel.dummyAudio.srcObject = null;
@@ -418,15 +762,24 @@ function handleClientFullDisconnect(msg = "已斷線") {
         }
     });
     activeClientCalls = [];
+
+    clientYouTubeTracks.forEach((track) => {
+        track.cleanupAction?.(false);
+    });
+    clientYouTubeTracks.clear();
+
     hostConnection = null;
 }
 
-function updateClientUrlButtonState() {
+function updateClientImportButtons() {
     const hasUrl = clientUrlInput.value.trim().length > 0;
+    const hasYouTube = Boolean(extractYouTubeVideoId(clientYoutubeInput.value.trim()));
     clientAddUrlBtn.disabled = clientUrlInput.disabled || !hasUrl;
+    clientAddYoutubeBtn.disabled = clientYoutubeInput.disabled || !hasYouTube;
 }
 
-clientUrlInput.addEventListener('input', updateClientUrlButtonState);
+clientUrlInput.addEventListener('input', updateClientImportButtons);
+clientYoutubeInput.addEventListener('input', updateClientImportButtons);
 
 // Client 初始化 Local Audio Context (用來擷取或混音，如果需要的話)
 async function ensureAudioInitializedClient() {
@@ -460,7 +813,8 @@ clientInitAudioBtn.addEventListener('click', async () => {
         clientFileInput.disabled = false;
         clientAddFileBtn.disabled = false;
         clientUrlInput.disabled = false;
-        updateClientUrlButtonState();
+        clientYoutubeInput.disabled = false;
+        updateClientImportButtons();
 
         clientInitAudioBtn.disabled = true;
         clientInitAudioBtn.classList.add('active');
@@ -762,6 +1116,11 @@ clientAddUrlBtn.addEventListener('click', async () => {
         return;
     }
 
+    if (extractYouTubeVideoId(url)) {
+        alert("偵測到 YouTube 連結，請改用下方的 YouTube 輸入欄。\n此模式會由 Client 控制進度並同步到 Host。");
+        return;
+    }
+
     try {
         await ensureAudioInitializedClient();
 
@@ -820,9 +1179,256 @@ clientAddUrlBtn.addEventListener('click', async () => {
         );
 
         clientUrlInput.value = '';
-        updateClientUrlButtonState();
+        updateClientImportButtons();
     } catch (e) {
         console.error(e);
         alert(`無法傳送網址音訊: ${e.message}`);
+    }
+});
+
+function sendYouTubeControlToHost(payload) {
+    if (!hostConnection?.open) {
+        return;
+    }
+    hostConnection.send(payload);
+}
+
+function addClientYouTubeTrack(videoId, rawUrl) {
+    const trackId = `yt-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const title = `YouTube: ${videoId}`;
+
+    const div = document.createElement('div');
+    div.className = 'client-track channel';
+
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'channel-header';
+    const nameEl = document.createElement('h3');
+    nameEl.className = 'channel-title';
+    nameEl.style.margin = '0';
+    nameEl.textContent = title;
+    headerDiv.appendChild(nameEl);
+
+    const youtubePlayerDiv = document.createElement('div');
+    youtubePlayerDiv.className = 'youtube-player';
+    const youtubeFrameDiv = document.createElement('div');
+    youtubeFrameDiv.className = 'youtube-frame';
+    youtubePlayerDiv.appendChild(youtubeFrameDiv);
+
+    const mediaProgress = document.createElement('div');
+    mediaProgress.className = 'media-progress';
+    mediaProgress.innerHTML = `
+        <div class="progress-bar">
+            <input class="progress-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="播放進度條" />
+        </div>
+        <div class="progress-time">
+            <span class="progress-current">0:00</span>
+            <span class="progress-duration">0:00</span>
+        </div>
+    `;
+
+    const progressSeek = mediaProgress.querySelector('.progress-seek');
+    const progressCurrent = mediaProgress.querySelector('.progress-current');
+    const progressDuration = mediaProgress.querySelector('.progress-duration');
+
+    const transportBtn = document.createElement('button');
+    transportBtn.className = 'transport-btn';
+    transportBtn.textContent = '播放';
+    transportBtn.disabled = true;
+
+    const stopBtn = document.createElement('button');
+    stopBtn.className = 'warning';
+    stopBtn.textContent = '停止同步';
+
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'actions';
+    actionsDiv.appendChild(transportBtn);
+    actionsDiv.appendChild(stopBtn);
+
+    div.appendChild(headerDiv);
+    div.appendChild(youtubePlayerDiv);
+    div.appendChild(mediaProgress);
+    div.appendChild(actionsDiv);
+    clientTracksList.appendChild(div);
+
+    let player = null;
+    let syncTimerId = null;
+    let disposed = false;
+
+    const updateTransportButton = () => {
+        if (!player) {
+            transportBtn.disabled = true;
+            transportBtn.textContent = '播放';
+            return;
+        }
+
+        transportBtn.disabled = false;
+        transportBtn.textContent = isYouTubePlaying(player) ? '暫停' : '播放';
+    };
+
+    const updateProgress = () => {
+        if (!player) {
+            return;
+        }
+
+        const duration = Number(player.getDuration?.() || 0);
+        const currentTime = Number(player.getCurrentTime?.() || 0);
+        const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+        const clampedPercent = Math.min(100, Math.max(0, progressPercent));
+
+        progressSeek.disabled = duration <= 0;
+        progressSeek.value = String(Math.round((clampedPercent / 100) * 1000));
+        progressSeek.style.setProperty("--progress", `${clampedPercent}%`);
+        progressCurrent.textContent = formatClientTime(currentTime);
+        progressDuration.textContent = formatClientTime(duration);
+    };
+
+    const sendControl = (action) => {
+        if (!player) {
+            return;
+        }
+
+        sendYouTubeControlToHost({
+            type: 'yt-control',
+            trackId,
+            action,
+            currentTime: Number(player.getCurrentTime?.() || 0),
+            duration: Number(player.getDuration?.() || 0),
+            isPlaying: isYouTubePlaying(player)
+        });
+    };
+
+    const cleanupAction = (notifyHost = true) => {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+
+        if (syncTimerId) {
+            clearInterval(syncTimerId);
+            syncTimerId = null;
+        }
+
+        if (notifyHost) {
+            sendYouTubeControlToHost({
+                type: 'yt-remove',
+                trackId
+            });
+        }
+
+        player?.destroy?.();
+        div.remove();
+        clientYouTubeTracks.delete(trackId);
+    };
+
+    stopBtn.addEventListener('click', () => cleanupAction(true));
+
+    transportBtn.addEventListener('click', () => {
+        if (!player) {
+            return;
+        }
+
+        if (isYouTubePlaying(player)) {
+            player.pauseVideo();
+            sendControl('pause');
+        } else {
+            player.playVideo();
+            sendControl('play');
+        }
+
+        updateTransportButton();
+        updateProgress();
+    });
+
+    progressSeek.addEventListener('input', () => {
+        if (!player) {
+            return;
+        }
+
+        const duration = Number(player.getDuration?.() || 0);
+        if (duration <= 0) {
+            return;
+        }
+
+        const percent = Number(progressSeek.value) / 1000;
+        player.seekTo(duration * percent, true);
+        updateProgress();
+        sendControl('seek');
+    });
+
+    sendYouTubeControlToHost({
+        type: 'yt-add',
+        trackId,
+        videoId,
+        title: `YouTube: ${videoId}`,
+        sourceUrl: rawUrl
+    });
+
+    createYouTubePlayer(youtubeFrameDiv, videoId)
+        .then((createdPlayer) => {
+            if (disposed) {
+                createdPlayer.destroy();
+                return;
+            }
+
+            player = createdPlayer;
+            player.pauseVideo();
+
+            player.addEventListener('onStateChange', () => {
+                updateTransportButton();
+                updateProgress();
+
+                const state = player.getPlayerState?.();
+                if (state === window.YT?.PlayerState?.PAUSED || state === window.YT?.PlayerState?.ENDED) {
+                    sendControl('pause');
+                }
+                if (state === window.YT?.PlayerState?.PLAYING) {
+                    sendControl('play');
+                }
+            });
+
+            syncTimerId = setInterval(() => {
+                if (!player) {
+                    return;
+                }
+                updateProgress();
+                sendControl('sync');
+            }, 1000);
+
+            updateTransportButton();
+            updateProgress();
+            sendControl('pause');
+        })
+        .catch((error) => {
+            cleanupAction(true);
+            alert(`無法建立 YouTube 軌道: ${error.message}`);
+        });
+
+    clientYouTubeTracks.set(trackId, {
+        trackId,
+        cleanupAction
+    });
+}
+
+clientAddYoutubeBtn.addEventListener('click', async () => {
+    if (!hostId || !hostConnection?.open) {
+        alert('請先連線到房主');
+        return;
+    }
+
+    const inputUrl = clientYoutubeInput.value.trim();
+    const videoId = extractYouTubeVideoId(inputUrl);
+
+    if (!videoId) {
+        alert('請輸入有效的 YouTube 連結');
+        return;
+    }
+
+    try {
+        await ensureAudioInitializedClient();
+        addClientYouTubeTrack(videoId, inputUrl);
+        clientYoutubeInput.value = '';
+        updateClientImportButtons();
+    } catch (error) {
+        alert(`無法加入 YouTube 軌道: ${error.message}`);
     }
 });
