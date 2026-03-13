@@ -64,9 +64,27 @@ button {
   border: 1px solid #4b5563;
   border-radius: 8px;
   padding: 8px 10px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+button.active {
+    background: #166534;
+    border-color: #22c55e;
+    color: white;
+}
+
+button.warning {
+  background: #b91c1c;
+  border-color: #ef4444;
+  color: white;
 }
 
 input[type="url"],
+input[type="text"],
 input[type="file"] {
   background: #111827;
   color: #e5e7eb;

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeerJS + Web Audio API 測試</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.6; }
+        .box { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 8px; }
+        input, button { padding: 8px; margin: 5px 0; }
+    </style>
+</head>
+<body>
+
+    <h1>PeerJS 麥克風音訊傳輸 (Web Audio API 版)</h1>
+
+    <div class="box">
+        <h3>我的資訊</h3>
+        <p>我的 ID: <strong id="my-id">載入中...</strong></p>
+        <p id="status">正在取得麥克風權限...</p>
+    </div>
+
+    <div class="box">
+        <h3>撥打給對方</h3>
+        <input type="text" id="remote-id" placeholder="輸入對方的 ID">
+        <button onclick="callPeer()">撥打通話</button>
+    </div>
+
+    <div class="box">
+        <h3>音訊狀態</h3>
+        <p id="audio-status">等待通話中...</p>
+    </div>
+
+    <script>
+        const peer = new Peer();
+        let localStream = null;
+        let audioContext = null;
+        
+        // 為了防止 Chrome 的 WebRTC 垃圾回收機制 (Garbage Collection) 導致音訊中斷的 workaround
+        let dummyAudioElement = null;
+
+        peer.on('open', (id) => {
+            document.getElementById('my-id').textContent = id;
+        });
+
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            .then((stream) => {
+                localStream = stream;
+                document.getElementById('status').textContent = "麥克風已就緒！";
+            })
+            .catch((err) => {
+                console.error('取得麥克風失敗:', err);
+                document.getElementById('status').textContent = "無法取得麥克風權限。";
+            });
+
+        // 接收端邏輯
+        peer.on('call', (call) => {
+            console.log('收到來電！');
+            call.answer(localStream); 
+            
+            call.on('stream', (remoteStream) => {
+                playStreamWithWebAudio(remoteStream);
+            });
+        });
+
+        // 發送端邏輯
+        function callPeer() {
+            const remoteId = document.getElementById('remote-id').value;
+            if (!remoteId || !localStream) {
+                alert('請確認已輸入 ID 且麥克風已準備好！');
+                return;
+            }
+
+            // 初始化 AudioContext (瀏覽器規定必須由使用者操作來觸發)
+            initAudioContext();
+
+            console.log('正在撥打給: ' + remoteId);
+            const call = peer.call(remoteId, localStream);
+
+            call.on('stream', (remoteStream) => {
+                playStreamWithWebAudio(remoteStream);
+            });
+        }
+
+        // 初始化 Web Audio API Context
+        function initAudioContext() {
+            if (!audioContext) {
+                // 支援跨瀏覽器前綴
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioContext = new AudioContext();
+            }
+            // 如果 AudioContext 處於暫停狀態，則喚醒它
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+
+        // 使用 Web Audio API 播放音訊串流
+        function playStreamWithWebAudio(stream) {
+            // 確保 AudioContext 已啟動
+            initAudioContext();
+
+            // 【重要修復】解決 Chrome 瀏覽器的 Bug：
+            // 如果沒有將 WebRTC 串流綁定到 HTMLMediaElement 並播放，Web Audio API 的 destination 可能會沒有聲音
+            dummyAudioElement = new Audio();
+            dummyAudioElement.srcObject = stream;
+            dummyAudioElement.muted = true; // 靜音，避免雙重播放
+            dummyAudioElement.play().catch(console.error);
+
+            // 1. 建立音訊來源節點 (Source)
+            const sourceNode = audioContext.createMediaStreamSource(stream);
+
+            // 2. 建立一個音量控制節點 (GainNode) 作為範例
+            const gainNode = audioContext.createGain();
+            gainNode.gain.value = 1.0; // 1.0 代表 100% 音量
+
+            // 3. 連接管線：Source -> Gain -> Destination (喇叭)
+            sourceNode.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            document.getElementById('audio-status').textContent = "📞 通話中 (由 Web Audio API 播放)";
+            console.log('Web Audio API 管線已建立！');
+        }
+    </script>
+</body>
+</html>

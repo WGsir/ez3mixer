@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EZ3 Mixer - Peer 連線</title>
+    <link rel="stylesheet" href="../styles.css" />
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+      .mode-select { display: flex; gap: 20px; margin-bottom: 20px; }
+      .mode-select button { padding: 16px 32px; font-size: 1.2rem; cursor: pointer; }
+      .section-host, .section-client { display: none; }
+      .client-tracks { 
+        margin-top: 20px; 
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 14px;
+      }
+      .client-track { 
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .box { border: 1px solid #4b5563; padding: 15px; margin-bottom: 20px; border-radius: 8px; background: #1f2937; }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header>
+        <h1>EZ3Mixer - 遠端連線模式</h1>
+        <p>A 用戶開房間，B 用戶連線並傳送音軌，由 A 用戶（房主）統一混音。</p>
+      </header>
+
+      <div id="modeSelection" class="mode-select">
+        <button id="btnHostMode">開房間 (成為房主)</button>
+        <button id="btnClientMode">連線 (成為客戶端)</button>
+      </div>
+
+      <!-- 房主 UI -->
+      <section id="hostSection" class="section-host">
+        <div class="box">
+          <h2>房主資訊</h2>
+          <p>你的房間 ID: <strong id="hostIdDisplay" style="color: #60a5fa; font-size: 1.2rem;">載入中...</strong></p>
+          <p style="color: gray;">請將此 ID 提供給客戶端連線。</p>
+          <button id="hostInitAudioBtn">啟用房主音訊</button>
+          <span id="hostStatus" style="font-size: small;color: gray;">等待啟用音訊...</span>
+        </div>
+
+        <section class="panel">
+          <div class="row master">
+            <label for="masterVolume">Master 音量</label>
+            <input id="masterVolume" type="range" min="0" max="200" value="100" />
+            <output id="masterVolumeValue">100%</output>
+          </div>
+          <div class="row meter-row">
+            <label for="masterMeterFill">Master Level</label>
+            <div class="meter" aria-label="Master 音量顯示條">
+              <div id="masterMeterFill" class="meter-fill"></div>
+            </div>
+            <output id="masterMeterValue">0%</output>
+          </div>
+        </section>
+
+        <section>
+          <h2>接收的軌道</h2>
+          <div id="channels" class="channels"></div>
+        </section>
+      </section>
+
+      <!-- 客戶端 UI -->
+      <section id="clientSection" class="section-client">
+        <div class="box">
+          <h2>連線至房主</h2>
+          <input type="text" id="remoteIdInput" placeholder="輸入房主的 ID" />
+          <button id="clientConnectBtn">連線</button>
+          <button id="clientDisconnectBtn" class="warning" style="display: none;">斷開連線</button>
+          <span id="clientStatus" style="font-size: small;color: gray;">尚未連線</span>
+        </div>
+
+        <div id="clientControls" class="box is-hidden">
+          <h2>新增音軌傳送至房間</h2>
+          <div class="row">
+            <button id="clientInitAudioBtn">啟用音訊權限</button>
+          </div>
+          
+          <div class="row">
+            <label for="clientDeviceSelect">輸入裝置</label>
+            <select id="clientDeviceSelect" disabled></select>
+            <button id="clientAddMicBtn" disabled>傳送麥克風</button>
+          </div>
+          <div class="row">
+            <label for="clientFileInput">音訊檔案</label>
+            <input id="clientFileInput" type="file" accept="audio/*,.mp3" multiple disabled />
+            <button id="clientAddFileBtn" disabled>傳送檔案軌道</button>
+          </div>
+
+          <div class="client-tracks" id="clientTracksList">
+            <h3>已傳送的軌道</h3>
+            <!-- 動態加入 -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 房主的混音軌道範本 -->
+    <template id="channelTemplate">
+      <article class="channel">
+        <div class="channel-header">
+          <h3 class="channel-title"></h3>
+          <div class="channel-header-tools">
+            <span class="source-badge">遠端音軌</span>
+          </div>
+        </div>
+        <div class="control-row">
+          <label>音量</label>
+          <input class="vol" type="range" min="0" max="200" value="100" />
+          <output class="vol-value">100%</output>
+        </div>
+        <div class="control-row meter-control-row">
+          <label>Level</label>
+          <div class="meter" aria-label="軌道音量顯示條">
+            <div class="meter-fill"></div>
+          </div>
+          <output class="meter-value">0%</output>
+        </div>
+        <details class="advanced-panel">
+          <summary>進階設定</summary>
+          <div class="advanced-content">
+            <div class="control-row">
+              <label>左右平衡</label>
+              <input class="pan" type="range" min="-100" max="100" value="0" />
+              <output class="pan-value">0</output>
+            </div>
+            <div class="control-row">
+              <label>低通濾波 (Hz)</label>
+              <input class="lp" type="range" min="300" max="20000" step="100" value="20000" />
+              <output class="lp-value">20000</output>
+            </div>
+          </div>
+        </details>
+        <div class="actions">
+          <button class="mute-btn">靜音</button>
+          <button class="remove-btn">斷開連線</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
