@@ -33,10 +33,8 @@ const clientDeviceSelect = document.getElementById("clientDeviceSelect");
 const clientAddMicBtn = document.getElementById("clientAddMicBtn");
 const clientFileInput = document.getElementById("clientFileInput");
 const clientAddFileBtn = document.getElementById("clientAddFileBtn");
-const clientUrlInput = document.getElementById("clientUrlInput");
-const clientAddUrlBtn = document.getElementById("clientAddUrlBtn");
-const clientYoutubeInput = document.getElementById("clientYoutubeInput");
-const clientAddYoutubeBtn = document.getElementById("clientAddYoutubeBtn");
+const clientMediaInput = document.getElementById("clientMediaInput");
+const clientAddMediaBtn = document.getElementById("clientAddMediaBtn");
 const clientTracksList = document.getElementById("clientTracksList");
 
 // 混音器變數 (Host 端)
@@ -987,14 +985,14 @@ function handleClientFullDisconnect(msg = "已斷線") {
 }
 
 function updateClientImportButtons() {
-    const hasUrl = clientUrlInput.value.trim().length > 0;
-    const hasYouTube = Boolean(extractYouTubeVideoId(clientYoutubeInput.value.trim()));
-    clientAddUrlBtn.disabled = clientUrlInput.disabled || !hasUrl;
-    clientAddYoutubeBtn.disabled = clientYoutubeInput.disabled || !hasYouTube;
+    const inputValue = clientMediaInput.value.trim();
+    const hasInput = inputValue.length > 0;
+    const isYouTube = Boolean(extractYouTubeVideoId(inputValue));
+    clientAddMediaBtn.disabled = clientMediaInput.disabled || !hasInput;
+    clientAddMediaBtn.textContent = isYouTube ? "加入 YouTube 軌道" : "傳送網址軌道";
 }
 
-clientUrlInput.addEventListener('input', updateClientImportButtons);
-clientYoutubeInput.addEventListener('input', updateClientImportButtons);
+clientMediaInput.addEventListener('input', updateClientImportButtons);
 
 // Client 初始化 Local Audio Context (用來擷取或混音，如果需要的話)
 async function ensureAudioInitializedClient() {
@@ -1027,8 +1025,7 @@ clientInitAudioBtn.addEventListener('click', async () => {
         clientAddMicBtn.disabled = !hasInputs;
         clientFileInput.disabled = false;
         clientAddFileBtn.disabled = false;
-        clientUrlInput.disabled = false;
-        clientYoutubeInput.disabled = false;
+        clientMediaInput.disabled = false;
         updateClientImportButtons();
 
         clientInitAudioBtn.disabled = true;
@@ -1319,85 +1316,94 @@ clientAddFileBtn.addEventListener('click', async () => {
     clientFileInput.value = '';
 });
 
-// 傳送網址音訊
-clientAddUrlBtn.addEventListener('click', async () => {
+// 傳送媒體網址（自動偵測 YouTube 或一般音訊/視訊網址）
+clientAddMediaBtn.addEventListener('click', async () => {
     if (!hostId) {
         alert("請先輸入房主 ID");
         return;
     }
 
-    const url = clientUrlInput.value.trim();
+    const url = clientMediaInput.value.trim();
     if (!url) {
         return;
     }
 
-    if (extractYouTubeVideoId(url)) {
-        alert("偵測到 YouTube 連結，請改用下方的 YouTube 輸入欄。\n此模式會由 Client 控制進度並同步到 Host。");
-        return;
-    }
-
-    try {
-        await ensureAudioInitializedClient();
-
-        const audio = new Audio();
-        audio.crossOrigin = "anonymous";
-        audio.src = url;
-        audio.controls = false;
-        audio.loop = false;
-
-        await new Promise((resolve, reject) => {
-            const onLoaded = () => {
-                cleanup();
-                resolve();
-            };
-            const onError = () => {
-                cleanup();
-                reject(new Error("網址音訊載入失敗，可能是連結錯誤或來源未開啟 CORS"));
-            };
-            const cleanup = () => {
-                audio.removeEventListener('loadedmetadata', onLoaded);
-                audio.removeEventListener('error', onError);
-            };
-
-            audio.addEventListener('loadedmetadata', onLoaded, { once: true });
-            audio.addEventListener('error', onError, { once: true });
-            audio.load();
-        });
-
-        const sourceNode = audioContext.createMediaElementSource(audio);
-        const destNode = audioContext.createMediaStreamDestination();
-        const analyser = createAnalyser();
-
-        sourceNode.connect(destNode);
-        sourceNode.connect(analyser);
-        sourceNode.connect(audioContext.destination);
-
-        let title = `網址: ${url}`;
+    const videoId = extractYouTubeVideoId(url);
+    if (videoId) {
+        // YouTube 連結
         try {
-            const parsedUrl = new URL(url);
-            const fileName = decodeURIComponent(parsedUrl.pathname.split('/').pop() || "");
-            title = fileName ? `網址: ${fileName}` : `網址: ${parsedUrl.hostname}`;
-        } catch {
-            // fallback 使用原始 URL
+            await ensureAudioInitializedClient();
+            addClientYouTubeTrack(videoId, url);
+            clientMediaInput.value = '';
+            updateClientImportButtons();
+        } catch (error) {
+            alert(`無法加入 YouTube 軌道：${error.message}`);
         }
+    } else {
+        // 一般音訊/視訊網址
+        try {
+            await ensureAudioInitializedClient();
 
-        const call = peer.call(hostId, destNode.stream, { metadata: { title } });
-        addClientTrackItem(
-            title,
-            call,
-            null,
-            [audio],
-            audio,
-            analyser,
-            [sourceNode, destNode, analyser],
-            []
-        );
+            const audio = new Audio();
+            audio.crossOrigin = "anonymous";
+            audio.src = url;
+            audio.controls = false;
+            audio.loop = false;
 
-        clientUrlInput.value = '';
-        updateClientImportButtons();
-    } catch (e) {
-        console.error(e);
-        alert(`無法傳送網址音訊: ${e.message}`);
+            await new Promise((resolve, reject) => {
+                const onLoaded = () => {
+                    cleanup();
+                    resolve();
+                };
+                const onError = () => {
+                    cleanup();
+                    reject(new Error("網址音訊載入失敗，可能是連結錯誤或來源未開啟 CORS"));
+                };
+                const cleanup = () => {
+                    audio.removeEventListener('loadedmetadata', onLoaded);
+                    audio.removeEventListener('error', onError);
+                };
+
+                audio.addEventListener('loadedmetadata', onLoaded, { once: true });
+                audio.addEventListener('error', onError, { once: true });
+                audio.load();
+            });
+
+            const sourceNode = audioContext.createMediaElementSource(audio);
+            const destNode = audioContext.createMediaStreamDestination();
+            const analyser = createAnalyser();
+
+            sourceNode.connect(destNode);
+            sourceNode.connect(analyser);
+            sourceNode.connect(audioContext.destination);
+
+            let title = `網址：${url}`;
+            try {
+                const parsedUrl = new URL(url);
+                const fileName = decodeURIComponent(parsedUrl.pathname.split('/').pop() || "");
+                title = fileName ? `網址：${fileName}` : `網址：${parsedUrl.hostname}`;
+            } catch {
+                // fallback 使用原始 URL
+            }
+
+            const call = peer.call(hostId, destNode.stream, { metadata: { title } });
+            addClientTrackItem(
+                title,
+                call,
+                null,
+                [audio],
+                audio,
+                analyser,
+                [sourceNode, destNode, analyser],
+                []
+            );
+
+            clientMediaInput.value = '';
+            updateClientImportButtons();
+        } catch (e) {
+            console.error(e);
+            alert(`無法傳送網址音訊：${e.message}`);
+        }
     }
 });
 
@@ -1668,29 +1674,6 @@ function addClientYouTubeTrack(videoId, rawUrl) {
     });
 }
 
-clientAddYoutubeBtn.addEventListener('click', async () => {
-    if (!hostId || !hostConnection?.open) {
-        alert('請先連線到房主');
-        return;
-    }
-
-    const inputUrl = clientYoutubeInput.value.trim();
-    const videoId = extractYouTubeVideoId(inputUrl);
-
-    if (!videoId) {
-        alert('請輸入有效的 YouTube 連結');
-        return;
-    }
-
-    try {
-        await ensureAudioInitializedClient();
-        addClientYouTubeTrack(videoId, inputUrl);
-        clientYoutubeInput.value = '';
-        updateClientImportButtons();
-    } catch (error) {
-        alert(`無法加入 YouTube 軌道: ${error.message}`);
-    }
-});
 
 navigator.mediaDevices?.addEventListener('devicechange', () => {
     if (mode === 'host' && audioContext) {
